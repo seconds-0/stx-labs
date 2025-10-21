@@ -14,6 +14,7 @@
   source .venv/bin/activate
   jupyter lab              # or: make lab
   ```
+- Always launch from the repository root (`make lab` does this automatically); the notebook now chdirs to the project root so imports resolve without manual tweaking.
 - Open `notebooks/stx_pox_flywheel.ipynb`. All imports resolve relative to the repo, so run top-to-bottom without extra path tweaks.
 
 ## 3. Running Tests & Formatting
