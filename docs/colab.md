@@ -10,6 +10,7 @@
   Example (current repo):  
   `https://colab.research.google.com/github/seconds-0/stx-labs/blob/main/notebooks/stx_pox_flywheel.ipynb`. citeturn0search1
 - Optional CLI: `colab-cli open-nb notebooks/stx_pox_flywheel.ipynb` opens the local file in Colab and syncs a Drive copy for future sessions. citeturn0search0
+- **Private repo note:** direct links prompt a GitHub authorization dialog. In Colab, use `File → Open notebook → GitHub`, sign in, and paste `seconds-0/stx-labs` to list notebooks. Authorize with a GitHub PAT that includes `repo` scope when prompted.
 
 ## Install Project Dependencies
 ```python
