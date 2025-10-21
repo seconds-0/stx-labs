@@ -1,0 +1,14 @@
+jupyterlab
+pandas
+numpy
+requests
+python-dateutil
+pyarrow
+plotly
+tenacity
+pytest
+pytest-cov
+responses
+black
+ruff
+python-dotenv

@@ -1,0 +1,55 @@
+"""Configuration helpers for Stacks PoX flywheel analysis."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from datetime import timedelta
+from pathlib import Path
+from typing import Sequence
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DATA_DIR = Path("data")
+RAW_DATA_DIR = DATA_DIR / "raw"
+OUT_DIR = Path("out")
+
+DEFAULT_WINDOWS: Sequence[int] = (30, 90, 180)
+
+SIGNAL21_BASE = os.getenv("SIGNAL21_BASE", "https://api-test.signal21.io")
+HIRO_BASE = os.getenv("HIRO_BASE", "https://api.hiro.so")
+
+HIRO_API_KEY_ENV = "HIRO_API_KEY"
+
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    """Settings for HTTP retry/backoff behaviour."""
+
+    wait_min_seconds: float = 0.5
+    wait_max_seconds: float = 8.0
+    max_attempts: int = 5
+    status_forcelist: tuple[int, ...] = field(
+        default_factory=lambda: (429, 500, 502, 503, 504)
+    )
+
+
+DEFAULT_RETRY_CONFIG = RetryConfig()
+
+
+def resolve_cache_path(prefix: str, key: str, suffix: str = ".json") -> Path:
+    """Return a deterministic cache path under data/raw for a given key."""
+    sanitized_prefix = prefix.replace("/", "_")
+    filename = f"{sanitized_prefix}_{key}{suffix}"
+    return RAW_DATA_DIR / filename
+
+
+def default_date_horizon_days() -> int:
+    """Use a large horizon that effectively requests full history."""
+    # 5 years as a practical default; downstream helpers allow overrides.
+    return int(timedelta(days=5 * 365).days)
