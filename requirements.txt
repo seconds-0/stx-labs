@@ -12,3 +12,4 @@ responses
 black
 ruff
 python-dotenv
+papermill

@@ -35,4 +35,4 @@
 ## Agent-Specific Instructions
 - Track all work through beads CLI (`bd`); avoid markdown TODOs.
 - Respect cache directories: wipe `data/raw/` selectively, never commit secrets or API keys.
-- For hosted execution, follow `docs/colab.md` to run notebooks in Google Colab with secrets managed via the Colab Secrets API.
+- Preferred workflow is local JupyterLab (see `docs/local.md` for full setup). Use Colab (`docs/colab.md`) only when remote execution is required, managing secrets via the Colab Secrets API.
