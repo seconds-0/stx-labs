@@ -7,8 +7,8 @@
 ## Launching the Notebook
 - Public repos can be opened with  
   `https://colab.research.google.com/github/<org>/<repo>/blob/<branch>/notebooks/stx_pox_flywheel.ipynb`.  
-  Example for `main`:  
-  `https://colab.research.google.com/github/stx-labs/stx-labs/blob/main/notebooks/stx_pox_flywheel.ipynb`. citeturn0search1
+  Example (current repo):  
+  `https://colab.research.google.com/github/seconds-0/stx-labs/blob/main/notebooks/stx_pox_flywheel.ipynb`. citeturn0search1
 - Optional CLI: `colab-cli open-nb notebooks/stx_pox_flywheel.ipynb` opens the local file in Colab and syncs a Drive copy for future sessions. citeturn0search0
 
 ## Install Project Dependencies
