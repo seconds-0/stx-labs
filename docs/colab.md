@@ -15,7 +15,9 @@
 ```python
 !pip install -r https://raw.githubusercontent.com/<org>/<repo>/main/requirements.txt
 ```
-Replace `<org>/<repo>` with the GitHub path you’re targeting. Avoid committing Colab’s ephemeral `pip` installs; the notebook documents required packages.
+Example for this project:  
+`!pip install -r https://raw.githubusercontent.com/seconds-0/stx-labs/main/requirements.txt`  
+Avoid committing Colab’s ephemeral `pip` installs; the notebook documents required packages.
 
 ## Secrets & Environment
 1. In Colab, click the key icon (left sidebar) → “Add new secret”. Store `HIRO_API_KEY` and any other credentials. citeturn0search8
