@@ -33,6 +33,7 @@
 - Ensure CI (pytest + formatting) passes before requesting review.
 
 ## Agent-Specific Instructions
+- Always execute the notebook locally (papermill or make targets) and confirm end-to-end success before reporting completion; surface any failures with logs.
 - Track all work through beads CLI (`bd`); avoid markdown TODOs.
 - Respect cache directories: wipe `data/raw/` or `data/cache/` selectively, never commit secrets or API keys.
 - Preferred workflow is local JupyterLab (see `docs/local.md` for full setup). Colab (`docs/colab.md`) is optional and should rely on cached artifacts when APIs are unstable.
