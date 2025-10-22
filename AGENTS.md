@@ -9,11 +9,11 @@
 - `.beads/` – issue tracker state; never edit manually.
 
 ## Build, Test, and Development Commands
-- `python -m venv .venv && source .venv/bin/activate` – create/enter isolated environment.
-- `pip install -r requirements.txt` – install notebook + helper dependencies.
-- `jupyter lab` – launch local development environment.
-- `pytest` – run automated tests (fast, default suite).
-- `pytest --maxfail=1 --cov=src` – coverage-focused smoke before PRs.
+- `make setup` – create/enter virtualenv and install dependencies.
+- `make lab` – launch JupyterLab from repo root (preferred interactive flow).
+- `make test` – run automated tests (fast, default suite).
+- `make lint` – format/lint via black + ruff.
+- `make notebook` – papermill execution to `out/stx_pox_flywheel_run.ipynb`.
 - `bd ready --json` – list unblocked beads issues prior to picking tasks.
 
 ## Coding Style & Naming Conventions
@@ -34,5 +34,5 @@
 
 ## Agent-Specific Instructions
 - Track all work through beads CLI (`bd`); avoid markdown TODOs.
-- Respect cache directories: wipe `data/raw/` selectively, never commit secrets or API keys.
-- Preferred workflow is local JupyterLab (see `docs/local.md` for full setup). Use Colab (`docs/colab.md`) only when remote execution is required, managing secrets via the Colab Secrets API.
+- Respect cache directories: wipe `data/raw/` or `data/cache/` selectively, never commit secrets or API keys.
+- Preferred workflow is local JupyterLab (see `docs/local.md` for full setup). Colab (`docs/colab.md`) is optional and should rely on cached artifacts when APIs are unstable.

@@ -28,9 +28,9 @@
   ```
 
 ## 4. Regenerating Outputs
-- Notebook writes artifacts to `./out/` and `./data/`. Remove stale caches if needed:
+- Notebook writes artifacts to `./out/` and caches API pulls under `./data/raw/` + `./data/cache/`. Remove stale caches if needed:
   ```bash
-  rm -rf data/raw/* out/*
+  rm -rf data/raw/* data/cache/* out/*
   ```
 - Re-run notebook to recreate exports (Parquet, CSV, charts).
 
