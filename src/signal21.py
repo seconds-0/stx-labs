@@ -11,7 +11,12 @@ import pandas as pd
 import requests
 
 from .config import SIGNAL21_BASE
-from .http_utils import RequestOptions, build_session, cached_json_request
+from .http_utils import (
+    RequestOptions,
+    TransientHTTPError,
+    build_session,
+    cached_json_request,
+)
 
 PRICE_ENDPOINT = f"{SIGNAL21_BASE}/v1/price"
 SQL_ENDPOINT = f"{SIGNAL21_BASE}/v1/sql-v2"
