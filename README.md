@@ -29,6 +29,7 @@ Notebook: `notebooks/stx_pox_flywheel.ipynb`. Run top-to-bottom; configuration c
 make test         # pytest suite (offline-friendly via mocks/fixtures)
 make lint         # black + ruff
 make notebook     # papermill execution saving to out/stx_pox_flywheel_run.ipynb
+make smoke-notebook  # papermill smoke run (30-day window, cache only)
 ```
 
 ## Documentation

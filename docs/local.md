@@ -40,6 +40,10 @@
   make notebook
   ```
 - Attach parameters via `-p NAME VALUE` if you want different windows or toggles.
+- Quick smoke run (30-day window, no refresh):
+  ```bash
+  make smoke-notebook
+  ```
 
 ## 6. Git Workflow
 - Standard sequence:

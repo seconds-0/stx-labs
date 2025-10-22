@@ -1,4 +1,4 @@
-.PHONY: setup lab test notebook lint clean
+.PHONY: setup lab test notebook smoke-notebook lint clean
 
 VENV?=.venv
 PYTHON?=$(VENV)/bin/python
@@ -22,6 +22,9 @@ lint:
 
 notebook:
 	$(PYTHON) -m papermill notebooks/stx_pox_flywheel.ipynb out/stx_pox_flywheel_run.ipynb
+
+smoke-notebook:
+	$(PYTHON) -m papermill notebooks/stx_pox_flywheel.ipynb out/smoke_run.ipynb -p HISTORY_DAYS 30 -p FORCE_REFRESH False
 
 clean:
 	rm -rf data/raw/* out/*
