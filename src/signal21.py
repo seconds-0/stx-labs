@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
+import warnings
 
 import pandas as pd
 import requests
@@ -20,6 +22,10 @@ def _signal21_session() -> requests.Session:
     return session
 
 
+MAX_CHUNK_DAYS = 30
+MIN_CHUNK_DAYS = 5
+
+
 def fetch_price_series(
     symbol: str,
     start: datetime,
@@ -30,27 +36,35 @@ def fetch_price_series(
 ) -> pd.DataFrame:
     """Fetch price data for a symbol and return as dataframe indexed by timestamp."""
     frames: list[pd.DataFrame] = []
-    for chunk_start, chunk_end in _iter_date_chunks(start, end):
-        params = {
-            "symbol": symbol,
-            "from": chunk_start.strftime("%Y-%m-%d"),
-            "to": chunk_end.strftime("%Y-%m-%d"),
-        }
-        payload = cached_json_request(
-            RequestOptions(
-                prefix="signal21_price",
-                session=_signal21_session(),
-                method="GET",
-                url=PRICE_ENDPOINT,
-                params=params,
+    queue: deque[tuple[datetime, datetime]] = deque(_iter_date_chunks(start, end, MAX_CHUNK_DAYS))
+    session = _signal21_session()
+
+    while queue:
+        chunk_start, chunk_end = queue.pop()
+        try:
+            chunk_df = _fetch_price_chunk(
+                symbol,
+                chunk_start,
+                chunk_end,
+                session=session,
                 force_refresh=force_refresh,
             )
-        )
-        chunk_df = pd.DataFrame(payload)
-        if chunk_df.empty:
+        except TransientHTTPError as exc:
+            span_days = (chunk_end - chunk_start).days
+            if span_days <= MIN_CHUNK_DAYS:
+                warnings.warn(
+                    f"Signal21 price API repeatedly failed for {symbol} between "
+                    f"{chunk_start.date()} and {chunk_end.date()}: {exc}. Skipping chunk.",
+                    RuntimeWarning,
+                )
+                continue
+            midpoint = chunk_start + timedelta(days=span_days // 2)
+            queue.appendleft((midpoint + timedelta(days=1), chunk_end))
+            queue.appendleft((chunk_start, midpoint))
             continue
-        chunk_df["ts"] = pd.to_datetime(chunk_df["ts"], utc=True)
-        frames.append(chunk_df)
+
+        if not chunk_df.empty:
+            frames.append(chunk_df)
 
     if not frames:
         df = pd.DataFrame(columns=["ts", "px"])
@@ -73,21 +87,51 @@ def fetch_price_series(
     )
 
 
+def _fetch_price_chunk(
+    symbol: str,
+    chunk_start: datetime,
+    chunk_end: datetime,
+    *,
+    session: requests.Session,
+    force_refresh: bool,
+) -> pd.DataFrame:
+    params = {
+        "symbol": symbol,
+        "from": chunk_start.strftime("%Y-%m-%d"),
+        "to": chunk_end.strftime("%Y-%m-%d"),
+    }
+    payload = cached_json_request(
+        RequestOptions(
+            prefix="signal21_price",
+            session=session,
+            method="GET",
+            url=PRICE_ENDPOINT,
+            params=params,
+            force_refresh=force_refresh,
+        )
+    )
+    df = pd.DataFrame(payload)
+    if df.empty:
+        return df
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    return df
+
+
 def _iter_date_chunks(
     start: datetime,
     end: datetime,
-    max_days: int = 90,
+    max_days: int,
 ) -> list[tuple[datetime, datetime]]:
-    """Yield inclusive date ranges that respect API limits."""
+    """Initial chunking helper before adaptive retries."""
     if start > end:
         raise ValueError("start must be <= end")
 
     chunks: list[tuple[datetime, datetime]] = []
     current = start
     while current <= end:
-        chunk_end = min(current + timedelta(days=max_days), end)
+        chunk_end = min(current + timedelta(days=max_days - 1), end)
         chunks.append((current, chunk_end))
-        if chunk_end == end:
+        if chunk_end >= end:
             break
         current = chunk_end + timedelta(days=1)
     return chunks
