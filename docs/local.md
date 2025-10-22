@@ -52,3 +52,4 @@
   git push
   ```
 - Use beads (`bd ready`, `bd update`) to track work; `.beads/issues.jsonl` stays under version control automatically.
+- If API rate limits or 500 errors appear when using full history, temporarily set `USE_FULL_HISTORY = False` and choose a narrower `START_DATE`; Signal21's public test endpoint can struggle with multi-year ranges.
