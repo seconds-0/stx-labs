@@ -54,11 +54,14 @@ def _fetch_prices_coingecko(symbol: str, start: datetime, end: datetime, *, forc
         raise ValueError(f"CoinGecko mapping not defined for {symbol}")
     coin_id, vs_currency = COINGECKO_IDS[symbol]
     url = f"{cfg.COINGECKO_BASE}/coins/{coin_id}/market_chart/range"
+    now_ts = int(datetime.now(UTC).timestamp())
     params = {
         "vs_currency": vs_currency,
-        "from": int(start.timestamp()),
-        "to": int(end.timestamp()),
+        "from": int(min(start.timestamp(), now_ts)),
+        "to": min(int(end.timestamp()), now_ts),
     }
+    if params["from"] >= params["to"]:
+        return pd.DataFrame(columns=["ts", "px"])
     payload = cached_json_request(
         RequestOptions(
             prefix=f"coingecko_{coin_id}_{vs_currency}",
@@ -137,6 +140,7 @@ def _ensure_price_series(
     subset = cache_df.loc[mask].copy()
     if subset.empty:
         return subset
+    subset["ts"] = pd.to_datetime(subset["ts"], utc=True)
     return (
         subset.set_index("ts")
         .resample(frequency)

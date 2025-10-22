@@ -72,15 +72,18 @@ def fetch_price_series(
             frames.append(chunk_df)
 
     if not frames:
-        df = pd.DataFrame(columns=["ts", "px"])
-    else:
-        df = (
-            pd.concat(frames, ignore_index=True)
+        return pd.DataFrame(columns=["ts", "px"])
+
+    df = (
+        pd.concat(frames, ignore_index=True)
             .drop_duplicates(subset=["ts"])
             .sort_values("ts")
-        )
-        if "price" in df.columns:
-            df = df.rename(columns={"price": "px"})
+    )
+    if "price" in df.columns:
+        df = df.rename(columns={"price": "px"})
+
+    if df.empty:
+        return df
 
     df = df.set_index("ts")
     return (
