@@ -164,6 +164,12 @@ def fetch_price_series(
     )
 
 
+def cached_price_series(symbol: str) -> pd.DataFrame:
+    """Return the currently cached raw price series for a symbol."""
+    df = _load_cached(symbol)
+    return df.copy()
+
+
 def load_price_panel(
     start: datetime,
     end: datetime,
