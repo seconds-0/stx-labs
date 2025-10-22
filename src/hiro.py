@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any, Dict, Iterator
 
 import pandas as pd
 import requests
 
+from . import config as cfg
+from .cache_utils import read_parquet, write_parquet
 from .config import HIRO_BASE, HIRO_API_KEY_ENV
 from .http_utils import RequestOptions, build_session, cached_json_request
 
@@ -16,6 +19,16 @@ BURNCHAIN_REWARDS_ENDPOINT = f"{HIRO_BASE}/extended/v1/burnchain/rewards"
 BLOCK_BY_BURN_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/block/by_burn_block_height"
 POX_CYCLES_ENDPOINT = f"{HIRO_BASE}/extended/v2/pox/cycles"
 TX_BY_BLOCK_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx/block_height"
+
+HIRO_CACHE_DIR = cfg.CACHE_DIR / "hiro"
+HIRO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _rewards_cache_path(start_height: int | None, end_height: int | None) -> Path:
+    label = "all"
+    if start_height is not None or end_height is not None:
+        label = f"{start_height or 'min'}_{end_height or 'max'}"
+    return HIRO_CACHE_DIR / f"rewards_{label}.parquet"
 
 
 def _hiro_session() -> requests.Session:
@@ -89,6 +102,15 @@ def aggregate_rewards_by_burn_block(
     force_refresh: bool = False,
 ) -> pd.DataFrame:
     """Aggregate sats committed per burn block height."""
+    cache_path = _rewards_cache_path(start_height, end_height)
+    if not force_refresh:
+        cached = read_parquet(cache_path)
+        if cached is not None:
+            cached["burn_block_height"] = cached["burn_block_height"].astype(int)
+            cached["reward_amount_sats_sum"] = cached["reward_amount_sats_sum"].astype(int)
+            cached["reward_recipients"] = cached["reward_recipients"].astype(int)
+            return cached.sort_values("burn_block_height")
+
     records: Dict[int, Dict[str, Any]] = {}
     for row in iterate_burnchain_rewards(
         start_height=start_height,
@@ -104,8 +126,10 @@ def aggregate_rewards_by_burn_block(
         record["reward_amount_sats_sum"] += reward_amount
         record["reward_recipients"] += 1
     if not records:
-        return pd.DataFrame(columns=["burn_block_height", "reward_amount_sats_sum", "reward_recipients"])
-    df = pd.DataFrame(sorted(records.values(), key=lambda r: r["burn_block_height"]))
+        df = pd.DataFrame(columns=["burn_block_height", "reward_amount_sats_sum", "reward_recipients"])
+    else:
+        df = pd.DataFrame(sorted(records.values(), key=lambda r: r["burn_block_height"]))
+    write_parquet(cache_path, df)
     return df
 
 
