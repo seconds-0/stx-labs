@@ -14,16 +14,19 @@ load_dotenv()
 
 DATA_DIR = Path("data")
 RAW_DATA_DIR = DATA_DIR / "raw"
+CACHE_DIR = DATA_DIR / "cache"
 OUT_DIR = Path("out")
 
 DEFAULT_WINDOWS: Sequence[int] = (30, 90, 180)
 
 SIGNAL21_BASE = os.getenv("SIGNAL21_BASE", "https://api-test.signal21.io")
 HIRO_BASE = os.getenv("HIRO_BASE", "https://api.hiro.so")
+COINGECKO_BASE = os.getenv("COINGECKO_BASE", "https://api.coingecko.com/api/v3")
 
 HIRO_API_KEY_ENV = "HIRO_API_KEY"
 
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -50,6 +53,11 @@ def resolve_cache_path(prefix: str, key: str, suffix: str = ".json") -> Path:
 
 
 def default_date_horizon_days() -> int:
-    """Use a large horizon that effectively requests full history."""
-    # 5 years as a practical default; downstream helpers allow overrides.
-    return int(timedelta(days=5 * 365).days)
+    """Default number of days to request when no explicit horizon supplied."""
+    env_value = os.getenv("DEFAULT_HISTORY_DAYS")
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            pass
+    return 365
