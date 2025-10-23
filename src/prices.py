@@ -118,14 +118,27 @@ def _ensure_price_series(
                 f"CoinGecko failed for {symbol}: {exc}. Falling back to Signal21.",
                 RuntimeWarning,
             )
-            fresh_df = _fetch_prices_fallback(symbol, start, end, frequency=frequency, force_refresh=force_refresh)
+            try:
+                fresh_df = _fetch_prices_fallback(symbol, start, end, frequency=frequency, force_refresh=force_refresh)
+            except Exception as fallback_exc:
+                warnings.warn(
+                    f"Signal21 fallback failed for {symbol}: {fallback_exc}. Using placeholder series.",
+                    RuntimeWarning,
+                )
+                fresh_df = pd.DataFrame()
 
         if fresh_df.empty:
             warnings.warn(
-                f"No price data retrieved for {symbol} between {start} and {end}.",
+                f"No price data retrieved for {symbol} between {start} and {end}; using placeholder series.",
                 RuntimeWarning,
             )
-        else:
+            placeholder_index = pd.date_range(start=start, end=end, freq=frequency, tz=UTC)
+            fresh_df = pd.DataFrame({
+                "ts": placeholder_index,
+                "px": 0.0,
+            })
+
+        if not fresh_df.empty:
             cache_df = (
                 pd.concat([cache_df, fresh_df], ignore_index=True)
                 .drop_duplicates(subset=["ts"])  # latest wins
@@ -188,11 +201,12 @@ def load_price_panel(
     df = (
         stx.rename(columns={"px": "stx_usd"})
         .merge(btc.rename(columns={"px": "btc_usd"}), on="ts", how="outer")
-        .sort_values("ts")
     )
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    df = df.set_index("ts").sort_index()
     df["stx_usd"] = df["stx_usd"].astype(float)
     df["btc_usd"] = df["btc_usd"].astype(float)
     df["stx_usd"] = df["stx_usd"].interpolate(method="time")
     df["btc_usd"] = df["btc_usd"].interpolate(method="time")
     df["stx_btc"] = df["stx_usd"] / df["btc_usd"]
-    return df
+    return df.reset_index()

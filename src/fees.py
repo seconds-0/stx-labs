@@ -43,7 +43,22 @@ def fetch_fees_by_tenure(*, force_refresh: bool = False) -> pd.DataFrame:
             cached["tx_count"] = cached["tx_count"].astype(int)
             return cached.sort_values("burn_block_height")
 
-    df = run_sql_query(FEES_PER_TENURE_SQL, force_refresh=force_refresh)
+    try:
+        df = run_sql_query(FEES_PER_TENURE_SQL, force_refresh=force_refresh)
+    except Exception as exc:
+        cached = read_parquet(cache_path)
+        if cached is not None:
+            return cached.sort_values("burn_block_height")
+        import warnings
+
+        warnings.warn(
+            f"Signal21 fee query failed ({exc}); returning empty fee table.",
+            RuntimeWarning,
+        )
+        return pd.DataFrame(
+            columns=["burn_block_height", "fees_stx_sum", "tx_count"], dtype=float
+        )
+
     if df.empty:
         return df
     df["burn_block_height"] = df["burn_block_height"].astype(int)
@@ -86,7 +101,26 @@ def fetch_fee_per_tx_summary(window_days: int, *, force_refresh: bool = False) -
             cached["fee_day"] = pd.to_datetime(cached["fee_day"])
             return cached.sort_values("fee_day")
 
-    df = run_sql_query(fee_per_tx_stats_sql(window_days), force_refresh=force_refresh)
+    try:
+        df = run_sql_query(fee_per_tx_stats_sql(window_days), force_refresh=force_refresh)
+    except Exception as exc:
+        cached = read_parquet(cache_path)
+        if cached is not None:
+            cached["fee_day"] = pd.to_datetime(cached["fee_day"])
+            return cached.sort_values("fee_day")
+        import warnings
+
+        warnings.warn(
+            f"Signal21 fee-per-tx query failed ({exc}); returning empty frame.",
+            RuntimeWarning,
+        )
+        return pd.DataFrame(columns=[
+            "fee_day",
+            "avg_fee_stx",
+            "median_fee_stx",
+            "p25_fee_stx",
+            "p75_fee_stx",
+        ])
     if df.empty:
         return df
     df["fee_day"] = pd.to_datetime(df["fee_day"])

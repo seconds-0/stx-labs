@@ -150,8 +150,8 @@ def fetch_block_by_burn_height(
     )
 
 
-def fetch_pox_cycles(*, limit: int = 200, offset: int = 0, force_refresh: bool = False) -> Dict[str, Any]:
-    params = {"limit": limit, "offset": offset}
+def fetch_pox_cycles(*, limit: int = 20, offset: int = 0, force_refresh: bool = False) -> Dict[str, Any]:
+    params = {"limit": min(limit, 20), "offset": offset}
     return cached_json_request(
         RequestOptions(
             prefix="hiro_pox_cycles",
@@ -167,6 +167,7 @@ def fetch_pox_cycles(*, limit: int = 200, offset: int = 0, force_refresh: bool =
 def list_pox_cycles(*, force_refresh: bool = False) -> pd.DataFrame:
     """Fetch the available PoX cycles into a dataframe."""
     offset = 0
+    total = None
     frames: list[pd.DataFrame] = []
     while True:
         payload = fetch_pox_cycles(offset=offset, force_refresh=force_refresh)
@@ -174,8 +175,9 @@ def list_pox_cycles(*, force_refresh: bool = False) -> pd.DataFrame:
         if not results:
             break
         frames.append(pd.DataFrame(results))
+        total = payload.get("total")
         offset += len(results)
-        if len(results) < payload.get("limit", len(results)):
+        if total is not None and offset >= total:
             break
     if not frames:
         return pd.DataFrame()
@@ -188,23 +190,8 @@ def collect_anchor_metadata(
     force_refresh: bool = False,
 ) -> pd.DataFrame:
     """Fetch anchor block metadata for a set of burn heights."""
-    records: list[Dict[str, Any]] = []
-    for height in burn_heights:
-        payload = fetch_block_by_burn_height(height, force_refresh=force_refresh)
-        if not payload:
-            continue
-        records.append(
-            {
-                "burn_block_height": payload.get("burn_block_height"),
-                "stacks_block_hash": payload.get("hash"),
-                "stacks_block_height": payload.get("height"),
-                "miner_txid": payload.get("miner_txid"),
-                "burn_block_time_iso": payload.get("burn_block_time_iso"),
-                "burn_block_time": payload.get("burn_block_time"),
-                "parent_index_block_hash": payload.get("parent_index_block_hash"),
-            }
-        )
-    if not records:
+    requested = {int(h) for h in burn_heights}
+    if not requested:
         return pd.DataFrame(
             columns=[
                 "burn_block_height",
@@ -216,7 +203,50 @@ def collect_anchor_metadata(
                 "parent_index_block_hash",
             ]
         )
-    return pd.DataFrame(records).sort_values("burn_block_height")
+
+    existing = read_parquet(ANCHOR_CACHE_PATH)
+    if existing is None or force_refresh:
+        existing = pd.DataFrame(columns=[
+            "burn_block_height",
+            "stacks_block_hash",
+            "stacks_block_height",
+            "miner_txid",
+            "burn_block_time_iso",
+            "burn_block_time",
+            "parent_index_block_hash",
+        ])
+    else:
+        existing["burn_block_height"] = existing["burn_block_height"].astype(int)
+
+    cached_heights = set(existing["burn_block_height"].tolist())
+    missing = sorted(requested - cached_heights)
+
+    if missing:
+        records: list[Dict[str, Any]] = []
+        for height in missing:
+            payload = fetch_block_by_burn_height(height, force_refresh=force_refresh)
+            if not payload:
+                continue
+            records.append(
+                {
+                    "burn_block_height": payload.get("burn_block_height"),
+                    "stacks_block_hash": payload.get("hash"),
+                    "stacks_block_height": payload.get("height"),
+                    "miner_txid": payload.get("miner_txid"),
+                    "burn_block_time_iso": payload.get("burn_block_time_iso"),
+                    "burn_block_time": payload.get("burn_block_time"),
+                    "parent_index_block_hash": payload.get("parent_index_block_hash"),
+                }
+            )
+        if records:
+            new_df = pd.DataFrame(records)
+            combined = pd.concat([existing, new_df], ignore_index=True)
+            combined = combined.drop_duplicates(subset=["burn_block_height"], keep="last")
+            write_parquet(ANCHOR_CACHE_PATH, combined)
+            existing = combined
+
+    result = existing[existing["burn_block_height"].isin(requested)].copy()
+    return result.sort_values("burn_block_height")
 
 
 def fetch_tx_by_block_height(
@@ -238,3 +268,4 @@ def fetch_tx_by_block_height(
             force_refresh=force_refresh,
         )
     )
+ANCHOR_CACHE_PATH = HIRO_CACHE_DIR / "anchor_metadata.parquet"
