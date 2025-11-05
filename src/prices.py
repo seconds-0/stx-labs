@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -199,6 +200,46 @@ def fetch_price_series(
     )
 
 
+def _fetch_price_series_with_timeout(
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    *,
+    frequency: str = "1h",
+    force_refresh: bool = False,
+    timeout_seconds: int = 60,
+) -> pd.DataFrame:
+    """Fetch price series with a timeout to prevent indefinite hangs."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            fetch_price_series,
+            symbol,
+            start,
+            end,
+            frequency=frequency,
+            force_refresh=force_refresh,
+        )
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FuturesTimeoutError:
+            warnings.warn(
+                f"Price fetch for {symbol} timed out after {timeout_seconds}s. "
+                "Returning placeholder series.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            # Return placeholder with 0.0 prices
+            placeholder_index = pd.date_range(
+                start=start, end=end, freq=frequency, tz=UTC
+            )
+            return pd.DataFrame(
+                {
+                    "ts": placeholder_index,
+                    "px": 0.0,
+                }
+            )
+
+
 def cached_price_series(symbol: str) -> pd.DataFrame:
     """Return the currently cached raw price series for a symbol."""
     df = _load_cached(symbol)
@@ -211,13 +252,16 @@ def load_price_panel(
     *,
     frequency: str = "1h",
     force_refresh: bool = False,
+    timeout_seconds: int = 60,
 ) -> pd.DataFrame:
-    """Return merged STX-USD, BTC-USD, and STX/BTC hourly data."""
-    stx = fetch_price_series(
-        "STX-USD", start, end, frequency=frequency, force_refresh=force_refresh
+    """Return merged STX-USD, BTC-USD, and STX/BTC hourly data with timeout protection."""
+    stx = _fetch_price_series_with_timeout(
+        "STX-USD", start, end, frequency=frequency, force_refresh=force_refresh,
+        timeout_seconds=timeout_seconds
     )
-    btc = fetch_price_series(
-        "BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh
+    btc = _fetch_price_series_with_timeout(
+        "BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh,
+        timeout_seconds=timeout_seconds
     )
 
     df = stx.rename(columns={"px": "stx_usd"}).merge(

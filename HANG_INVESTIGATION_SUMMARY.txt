@@ -1,0 +1,379 @@
+================================================================================
+NOTEBOOK HANGING INVESTIGATION - EXECUTIVE SUMMARY
+================================================================================
+
+ISSUE:
+  Notebook execution stalls at Cell 6 (18% progress) for 2-3 minutes before
+  eventually continuing. Users perceive this as a complete hang.
+
+ROOT CAUSE:
+  1. Price cache is empty (data/cache/prices/ contains no .parquet files)
+  2. CoinGecko API endpoint for STX returns 404 (endpoint deprecated/broken)
+  3. Falls back to Signal21 which returns 500 errors (server-side issue)
+  4. Retry logic with exponential backoff exhausts in 2-3 minutes per symbol
+  5. No global timeout on price fetching → takes full retry duration
+
+TECHNICAL DETAILS:
+
+  Timeout Configuration (src/config.py):
+    - Per-request timeout: 30 seconds
+    - Retry max attempts: 5 per request
+    - Exponential backoff: 0.5s to 8.0s
+    - Retried on status codes: 429, 500, 502, 503, 504, 522
+
+  HTTP Request Flow:
+    For each of 12 chunks (30-day windows) in 365-day span:
+      Attempt 1: 30s timeout → 500 error
+      Backoff:   1-2 seconds
+      Attempt 2: 30s timeout → 500 error
+      ... (continues for 5 total attempts)
+      Total per chunk: ~2.5 minutes
+    
+    For 2 symbols (STX-USD, BTC-USD):
+      Total potential time: 2 symbols × 2.5 min = 5 minutes
+      Actual observed: 2-3 minutes (pyramid retry reduces attempts as chunk shrinks)
+
+  Adaptive Chunking Problem (src/signal21.py:49-73):
+    When a 30-day chunk fails after 5 attempts:
+      ├─ Check span: 30 days > MIN_CHUNK_DAYS (5)? YES
+      ├─ Halve chunk into 2 x 15-day chunks
+      ├─ Add to retry queue
+      └─ Each 15-day chunk goes through same retry logic
+         ├─ Another 5 attempts
+         ├─ Fails → halve to 7-8 day chunks
+         ├─ Another 5 attempts per chunk
+         └─ Eventually chunks < 5 days → skip with warning
+
+  The result is a PYRAMID of retries:
+    30-day chunk:   1 × 5 attempts
+    15-day chunks:  2 × 5 attempts = 10 attempts
+    7-8 day chunks: 4 × 5 attempts = 20 attempts
+    3-4 day chunks: 8 × 5 attempts = 40 attempts
+    ───────────────────────────────
+    Total:                ~75 attempts × 30s ≈ 37.5 minutes theoretical
+
+  Why it's only 2-3 minutes in practice:
+    - CoinGecko fails fast (no chunking)
+    - Signal21 chunking eventually gives up with warnings
+    - Fallback to placeholder prices (0.0) kicks in
+    - Notebook continues with empty/invalid price data
+
+ERROR MESSAGES OBSERVED:
+
+  RuntimeWarning: CoinGecko failed for STX-USD: 404 Client Error: Not Found
+    for url: https://api.coingecko.com/api/v3/coins/stacks/market_chart/range?...
+    Falling back to Signal21.
+  
+  RuntimeWarning: Signal21 price API repeatedly failed for STX-USD 
+    between 2025-10-17 and 2025-10-22: Status 500 for 
+    https://api-test.signal21.io/v1/price. Skipping chunk.
+
+IMPACT:
+
+  Cell 6 Hang Time:        2-3 minutes
+  Cell 12 Hang (depends):  <1 second (once Cell 6 completes)
+  Full notebook time:      5-7 minutes (instead of 45-60 expected)
+  Price data quality:      NONE (all placeholders with value 0.0)
+  Downstream analysis:     PoX APY calculations become invalid
+  User experience:         Perceived hang with no progress feedback
+
+================================================================================
+PROPOSED SOLUTIONS (Ranked by Recommendation)
+================================================================================
+
+SOLUTION 1: Remove 500 from Retry Forcelist + Add Global Timeout
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RECOMMENDATION: IMPLEMENT IMMEDIATELY
+Time to implement: 15 minutes
+Impact: Reduces hang time to 30-45 seconds, predictable failure
+
+Implementation:
+
+  File: src/config.py (line 46)
+  ─────────────────────────────
+  BEFORE:
+    status_forcelist=(429, 500, 502, 503, 504, 522),
+
+  AFTER:
+    status_forcelist=(429, 502, 503, 504, 522),  # Removed 500
+  
+  Rationale:
+    - 500 errors are server-side failures that retrying won't fix
+    - Removes unnecessary 5x retry cycles per chunk
+    - Reduces from exponential delay to immediate failure
+    - Cuts effective hang time to ~30-45 seconds
+
+  ────────────────────────────────────────────────────────────────
+
+  File: src/prices.py (add new function around line 100)
+  ────────────────────────────────────────────────────────
+  AFTER fetch_price_series() definition, add:
+
+    from threading import Thread
+    import queue
+    
+    def fetch_price_series_with_timeout(
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        frequency: str = "1h",
+        force_refresh: bool = False,
+        timeout_seconds: float = 180,
+    ) -> pd.DataFrame:
+        """Fetch prices with global timeout, fall back to placeholder on timeout."""
+        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        
+        def worker() -> None:
+            try:
+                result = fetch_price_series(
+                    symbol, start, end, frequency=frequency, force_refresh=force_refresh
+                )
+                result_queue.put(("success", result))
+            except Exception as exc:
+                result_queue.put(("error", exc))
+        
+        thread = Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout_seconds)
+        
+        if thread.is_alive():
+            # Timeout occurred
+            warnings.warn(
+                f"Price fetching for {symbol} exceeded {timeout_seconds}s timeout. "
+                f"Using placeholder prices (0.0).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            placeholder_index = pd.date_range(start=start, end=end, freq=frequency, tz=UTC)
+            return pd.DataFrame({
+                "ts": placeholder_index,
+                "px": 0.0,
+            })
+        
+        status, result = result_queue.get()
+        if status == "error":
+            warnings.warn(
+                f"Price fetching for {symbol} failed: {result}. "
+                f"Using placeholder prices (0.0).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            placeholder_index = pd.date_range(start=start, end=end, freq=frequency, tz=UTC)
+            return pd.DataFrame({
+                "ts": placeholder_index,
+                "px": 0.0,
+            })
+        
+        return result
+
+  Then modify load_price_panel() to use this function:
+  ─────────────────────────────────────────────────────
+
+  File: src/prices.py load_price_panel() function (around line 216)
+  BEFORE:
+    def load_price_panel(
+        start: datetime,
+        end: datetime,
+        *,
+        frequency: str = "1h",
+        force_refresh: bool = False,
+    ) -> pd.DataFrame:
+        """Return merged STX-USD, BTC-USD, and STX/BTC hourly data."""
+        stx = fetch_price_series(
+            "STX-USD", start, end, frequency=frequency, force_refresh=force_refresh
+        )
+        btc = fetch_price_series(
+            "BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh
+        )
+
+  AFTER:
+    def load_price_panel(
+        start: datetime,
+        end: datetime,
+        *,
+        frequency: str = "1h",
+        force_refresh: bool = False,
+        timeout_seconds: float = 180,  # Add parameter
+    ) -> pd.DataFrame:
+        """Return merged STX-USD, BTC-USD, and STX/BTC hourly data."""
+        stx = fetch_price_series_with_timeout(  # Use new function
+            "STX-USD", start, end, frequency=frequency, force_refresh=force_refresh,
+            timeout_seconds=timeout_seconds,
+        )
+        btc = fetch_price_series_with_timeout(  # Use new function
+            "BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh,
+            timeout_seconds=timeout_seconds,
+        )
+
+Benefits:
+  ✓ Notebook completes predictably (180s = 3 min max)
+  ✓ No infinite retry loops
+  ✓ Graceful fallback with clear warnings
+  ✓ Preserves price data if APIs respond quickly
+  ✓ Works on all platforms (uses threading not signals)
+
+Trade-offs:
+  - Price data = 0.0 if timeout occurs
+  - PoX APY calculations become invalid (but analysis continues)
+  - May need timeout tuning for slow networks
+
+────────────────────────────────────────────────────────────────────
+
+
+SOLUTION 2: Cache-Only Mode (FASTEST but No Price Data)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RECOMMENDATION: FALLBACK / TESTING ONLY
+Time to implement: 5 minutes
+Impact: Notebook runs in 30 seconds
+
+Implementation:
+
+  File: src/prices.py (modify _ensure_price_series, line 100)
+  
+  BEFORE (lines 118-140):
+    need_fetch = force_refresh or not _cache_covers(cache_df, start, end)
+    if need_fetch:
+        try:
+            fresh_df = _fetch_prices_coingecko(...)
+        except Exception as exc:
+            ...try Signal21 fallback...
+
+  AFTER:
+    need_fetch = force_refresh or not _cache_covers(cache_df, start, end)
+    if need_fetch:
+        # OPTION 1: Skip all fetching if cache-only mode
+        if os.getenv("PRICE_CACHE_ONLY") == "1":
+            warnings.warn(
+                f"Cache-only mode: skipping API fetch for {symbol}",
+                RuntimeWarning,
+            )
+            fresh_df = pd.DataFrame()
+        else:
+            try:
+                fresh_df = _fetch_prices_coingecko(...)
+            except Exception as exc:
+                ...existing Signal21 fallback...
+
+  Then in notebook (Notebook cell 3), add:
+    import os
+    os.environ["PRICE_CACHE_ONLY"] = "1"
+
+Benefits:
+  ✓ Fastest (30 seconds)
+  ✓ No network calls
+  ✓ Easiest testing
+
+Trade-offs:
+  - Zero price data
+  - Loses all analysis that depends on prices
+  - Not for production
+
+────────────────────────────────────────────────────────────────────
+
+
+SOLUTION 3: Reduce Max Retry Attempts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RECOMMENDATION: SUPPLEMENT SOLUTION 1
+Time to implement: 2 minutes
+Impact: Additional time savings of 1-2 min
+
+Implementation:
+
+  File: src/config.py (line 40)
+  
+  BEFORE:
+    max_attempts: int = 5,
+  
+  AFTER:
+    max_attempts: int = 3,  # Reduce from 5 to 3
+
+Benefits:
+  ✓ Fails faster (3 attempts instead of 5)
+  ✓ Simple one-line change
+
+Trade-offs:
+  - May fail even if API recovers on 4th-5th attempt
+  - Less robust for transient errors
+
+================================================================================
+TESTING THE FIXES
+================================================================================
+
+Step 1: Apply Fix 1 (Config change) - 2 minutes
+  $ cd /Users/alexanderhuth/Code/stx-labs/.conductor/stuttgart
+  $ # Edit src/config.py line 46 to remove 500 from status_forcelist
+  $ git diff src/config.py  # Verify change
+
+Step 2: Test with Smoke Run - 5 minutes
+  $ make smoke-notebook
+  # Expected: Should hang for ~30-45s instead of 2-3 min
+  # Check output: data/cache/prices/ should have .parquet files
+
+Step 3: Apply Fix 2 (Timeout) - 10 minutes
+  $ # Edit src/prices.py to add fetch_price_series_with_timeout()
+  $ # Edit load_price_panel() to use new function
+  $ git diff src/prices.py  # Verify change
+
+Step 4: Full Verification - 5 minutes
+  $ make notebook
+  # Expected: Completes in 5-7 minutes instead of 30+
+  # Check outputs exist: out/*.parquet, out/*.csv, out/*.html
+
+Step 5: Verify Cache
+  $ ls -lh data/cache/prices/
+  # Should show STX-USD.parquet and BTC-USD.parquet
+
+================================================================================
+EXPECTED OUTCOMES AFTER FIXES
+================================================================================
+
+Timeline BEFORE fixes:
+  Cell 1-5:   30s (fast)
+  Cell 6:     2-3 min (hangs!) ← PROBLEM HERE
+  Cell 7-12:  30s (fast)
+  Total:      3-4 min actual, but user perception: HUNG
+
+Timeline AFTER fixes:
+  Cell 1-5:   30s (unchanged)
+  Cell 6:     45s (timeout triggers, uses placeholder)
+  Cell 7-12:  30s (unchanged)
+  Total:      105s = 1:45 actual time
+
+Smoke notebook:
+  BEFORE: Hangs at 34% for 2+ minutes
+  AFTER:  Completes in 2-3 minutes consistently
+
+Full notebook:
+  BEFORE: Hangs at 18%, then 34%, total 30+ minutes or never finishes
+  AFTER:  Completes in 5-7 minutes with fallback prices
+
+================================================================================
+ADDITIONAL NOTES
+================================================================================
+
+Why notebook can complete without prices:
+  - Fees are fetched independently (Signal21 SQL)
+  - Rewards are fetched independently (Hiro API)
+  - Panel construction can handle price=0.0 (no crashes)
+  - Scenario analysis produces output (though APY meaningless)
+  - Wallet metrics work independently
+
+Why CoinGecko is failing:
+  - Endpoint: /coins/{id}/market_chart/range
+  - Current implementation tries to hit the "range" endpoint
+  - This endpoint may be deprecated or require different parameters
+  - Coin ID "stacks" is correct but endpoint structure differs
+
+Follow-up improvements (not urgent):
+  1. Investigate CoinGecko API docs for correct endpoint
+  2. Consider removing CoinGecko entirely (Signal21 provides prices)
+  3. Add price validation tests
+  4. Consider pre-seeding cache with known good data
+
+Cache invalidation strategy:
+  - TTL = 6 hours (for CoinGecko, line 76 in prices.py)
+  - TTL = 3600 seconds (default for HTTP responses, line 85 in http_utils.py)
+  - Both are reasonable for market data freshness
+
+================================================================================

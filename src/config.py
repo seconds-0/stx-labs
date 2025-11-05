@@ -39,7 +39,7 @@ class RetryConfig:
     wait_max_seconds: float = 8.0
     max_attempts: int = 5
     status_forcelist: tuple[int, ...] = field(
-        default_factory=lambda: (429, 500, 502, 503, 504, 522)
+        default_factory=lambda: (429, 502, 503, 504, 522)
     )
 
 
