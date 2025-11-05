@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
 import pandas as pd
 
@@ -59,15 +58,19 @@ def build_tenure_panel(
     )
     panel = panel.rename(columns={"ts": "price_ts"})
 
-    panel["reward_value_sats"] = (panel["reward_stx_total"] * panel["stx_btc"] * 1e8).fillna(0.0)
-    panel["rho"] = (
-        panel["reward_amount_sats_sum"] / panel["reward_value_sats"].replace({0: pd.NA})
+    panel["reward_value_sats"] = (
+        panel["reward_stx_total"] * panel["stx_btc"] * 1e8
+    ).fillna(0.0)
+    panel["rho"] = panel["reward_amount_sats_sum"] / panel["reward_value_sats"].replace(
+        {0: pd.NA}
     )
     panel["rho"] = panel["rho"].clip(cfg.rho_clip_min, cfg.rho_clip_max)
     panel["rho"] = panel["rho"].fillna(0.0)
 
     panel["rho_flag_div0"] = panel["reward_value_sats"] == 0
-    panel["coinbase_flag"] = (panel["coinbase_estimate"] - cfg.coinbase_stx).abs() > 1e-6
+    panel["coinbase_flag"] = (
+        panel["coinbase_estimate"] - cfg.coinbase_stx
+    ).abs() > 1e-6
     return panel
 
 

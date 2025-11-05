@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
-import warnings
 
 import pandas as pd
 
 from . import config as cfg
 from .http_utils import RequestOptions, build_session, cached_json_request
 from .signal21 import fetch_price_series as fetch_price_series_signal21
-
 
 COINGECKO_IDS = {
     "STX-USD": ("stacks", "usd"),
@@ -21,7 +20,9 @@ COINGECKO_IDS = {
 PRICE_CACHE_DIR = cfg.CACHE_DIR / "prices"
 PRICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-_COINGECKO_SESSION = build_session({"Accept": "application/json", "User-Agent": "stx-labs-notebook/1.0"})
+_COINGECKO_SESSION = build_session(
+    {"Accept": "application/json", "User-Agent": "stx-labs-notebook/1.0"}
+)
 
 
 def _cache_path(symbol: str) -> Path:
@@ -49,7 +50,9 @@ def _cache_covers(df: pd.DataFrame, start: datetime, end: datetime) -> bool:
     return df["ts"].min() <= start and df["ts"].max() >= end
 
 
-def _fetch_prices_coingecko(symbol: str, start: datetime, end: datetime, *, force_refresh: bool) -> pd.DataFrame:
+def _fetch_prices_coingecko(
+    symbol: str, start: datetime, end: datetime, *, force_refresh: bool
+) -> pd.DataFrame:
     if symbol not in COINGECKO_IDS:
         raise ValueError(f"CoinGecko mapping not defined for {symbol}")
     coin_id, vs_currency = COINGECKO_IDS[symbol]
@@ -82,7 +85,9 @@ def _fetch_prices_coingecko(symbol: str, start: datetime, end: datetime, *, forc
     return df
 
 
-def _fetch_prices_fallback(symbol: str, start: datetime, end: datetime, *, frequency: str, force_refresh: bool) -> pd.DataFrame:
+def _fetch_prices_fallback(
+    symbol: str, start: datetime, end: datetime, *, frequency: str, force_refresh: bool
+) -> pd.DataFrame:
     return fetch_price_series_signal21(
         symbol,
         start,
@@ -112,31 +117,44 @@ def _ensure_price_series(
     need_fetch = force_refresh or not _cache_covers(cache_df, start, end)
     if need_fetch:
         try:
-            fresh_df = _fetch_prices_coingecko(symbol, start, end, force_refresh=force_refresh)
+            fresh_df = _fetch_prices_coingecko(
+                symbol, start, end, force_refresh=force_refresh
+            )
         except Exception as exc:  # broad to fall back gracefully
             warnings.warn(
                 f"CoinGecko failed for {symbol}: {exc}. Falling back to Signal21.",
                 RuntimeWarning,
+                stacklevel=2,
             )
             try:
-                fresh_df = _fetch_prices_fallback(symbol, start, end, frequency=frequency, force_refresh=force_refresh)
+                fresh_df = _fetch_prices_fallback(
+                    symbol, start, end, frequency=frequency, force_refresh=force_refresh
+                )
             except Exception as fallback_exc:
                 warnings.warn(
-                    f"Signal21 fallback failed for {symbol}: {fallback_exc}. Using placeholder series.",
+                    "Signal21 fallback failed for "
+                    f"{symbol}: {fallback_exc}. Using placeholder series.",
                     RuntimeWarning,
+                    stacklevel=2,
                 )
                 fresh_df = pd.DataFrame()
 
         if fresh_df.empty:
             warnings.warn(
-                f"No price data retrieved for {symbol} between {start} and {end}; using placeholder series.",
+                "No price data retrieved for "
+                f"{symbol} between {start} and {end}; using placeholder series.",
                 RuntimeWarning,
+                stacklevel=2,
             )
-            placeholder_index = pd.date_range(start=start, end=end, freq=frequency, tz=UTC)
-            fresh_df = pd.DataFrame({
-                "ts": placeholder_index,
-                "px": 0.0,
-            })
+            placeholder_index = pd.date_range(
+                start=start, end=end, freq=frequency, tz=UTC
+            )
+            fresh_df = pd.DataFrame(
+                {
+                    "ts": placeholder_index,
+                    "px": 0.0,
+                }
+            )
 
         if not fresh_df.empty:
             cache_df = (
@@ -195,12 +213,15 @@ def load_price_panel(
     force_refresh: bool = False,
 ) -> pd.DataFrame:
     """Return merged STX-USD, BTC-USD, and STX/BTC hourly data."""
-    stx = fetch_price_series("STX-USD", start, end, frequency=frequency, force_refresh=force_refresh)
-    btc = fetch_price_series("BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh)
+    stx = fetch_price_series(
+        "STX-USD", start, end, frequency=frequency, force_refresh=force_refresh
+    )
+    btc = fetch_price_series(
+        "BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh
+    )
 
-    df = (
-        stx.rename(columns={"px": "stx_usd"})
-        .merge(btc.rename(columns={"px": "btc_usd"}), on="ts", how="outer")
+    df = stx.rename(columns={"px": "stx_usd"}).merge(
+        btc.rename(columns={"px": "btc_usd"}), on="ts", how="outer"
     )
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df = df.set_index("ts").sort_index()

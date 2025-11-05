@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping
+from typing import Any
 
 import requests
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from .config import DEFAULT_RETRY_CONFIG, resolve_cache_path
 
@@ -26,7 +32,9 @@ def _hash_payload(*parts: Any) -> str:
     return digest.hexdigest()
 
 
-def _build_cache_path(prefix: str, *, method: str, url: str, params: Any, payload: Any) -> Path:
+def _build_cache_path(
+    prefix: str, *, method: str, url: str, params: Any, payload: Any
+) -> Path:
     cache_key = _hash_payload(method.upper(), url, params, payload)
     return resolve_cache_path(prefix, cache_key)
 

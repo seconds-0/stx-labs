@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
-import pytest
 
 from src import prices
 
@@ -85,8 +84,7 @@ def test_aggregate_rewards_cache(monkeypatch, tmp_path):
             {"burn_block_height": 1, "reward_amount": 200},
             {"burn_block_height": 2, "reward_amount": 300},
         ]
-        for row in data:
-            yield row
+        yield from data
 
     monkeypatch.setattr(hiro, "iterate_burnchain_rewards", fake_iterate)
 

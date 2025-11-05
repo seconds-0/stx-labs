@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -54,6 +53,7 @@ def fetch_fees_by_tenure(*, force_refresh: bool = False) -> pd.DataFrame:
         warnings.warn(
             f"Signal21 fee query failed ({exc}); returning empty fee table.",
             RuntimeWarning,
+            stacklevel=2,
         )
         return pd.DataFrame(
             columns=["burn_block_height", "fees_stx_sum", "tx_count"], dtype=float
@@ -92,7 +92,9 @@ ORDER BY 1;
 """
 
 
-def fetch_fee_per_tx_summary(window_days: int, *, force_refresh: bool = False) -> pd.DataFrame:
+def fetch_fee_per_tx_summary(
+    window_days: int, *, force_refresh: bool = False
+) -> pd.DataFrame:
     """Fetch per-transaction fee statistics for a trailing window."""
     cache_path = _fees_cache_path(f"fee_per_tx_{window_days}d")
     if not force_refresh:
@@ -102,7 +104,9 @@ def fetch_fee_per_tx_summary(window_days: int, *, force_refresh: bool = False) -
             return cached.sort_values("fee_day")
 
     try:
-        df = run_sql_query(fee_per_tx_stats_sql(window_days), force_refresh=force_refresh)
+        df = run_sql_query(
+            fee_per_tx_stats_sql(window_days), force_refresh=force_refresh
+        )
     except Exception as exc:
         cached = read_parquet(cache_path)
         if cached is not None:
@@ -113,14 +117,17 @@ def fetch_fee_per_tx_summary(window_days: int, *, force_refresh: bool = False) -
         warnings.warn(
             f"Signal21 fee-per-tx query failed ({exc}); returning empty frame.",
             RuntimeWarning,
+            stacklevel=2,
         )
-        return pd.DataFrame(columns=[
-            "fee_day",
-            "avg_fee_stx",
-            "median_fee_stx",
-            "p25_fee_stx",
-            "p75_fee_stx",
-        ])
+        return pd.DataFrame(
+            columns=[
+                "fee_day",
+                "avg_fee_stx",
+                "median_fee_stx",
+                "p25_fee_stx",
+                "p75_fee_stx",
+            ]
+        )
     if df.empty:
         return df
     df["fee_day"] = pd.to_datetime(df["fee_day"])

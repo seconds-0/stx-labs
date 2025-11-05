@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -29,16 +29,16 @@ def _make_panel_inputs():
             "stacks_block_height": [2000, 2001],
             "miner_txid": ["0x01", "0x02"],
             "burn_block_time_iso": [
-                datetime(2024, 1, 1, tzinfo=timezone.utc),
-                datetime(2024, 1, 2, tzinfo=timezone.utc),
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2024, 1, 2, tzinfo=UTC),
             ],
         }
     )
     prices = pd.DataFrame(
         {
             "ts": [
-                datetime(2024, 1, 1, tzinfo=timezone.utc),
-                datetime(2024, 1, 2, tzinfo=timezone.utc),
+                datetime(2024, 1, 1, tzinfo=UTC),
+                datetime(2024, 1, 2, tzinfo=UTC),
             ],
             "stx_usd": [1.0, 1.1],
             "btc_usd": [40_000.0, 42_000.0],

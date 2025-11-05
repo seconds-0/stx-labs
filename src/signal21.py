@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import deque
-from datetime import UTC, datetime, timedelta
-from typing import Any
 import warnings
+from collections import deque
+from datetime import datetime, timedelta
+from typing import Any
 
 import pandas as pd
 import requests
@@ -41,7 +41,9 @@ def fetch_price_series(
 ) -> pd.DataFrame:
     """Fetch price data for a symbol and return as dataframe indexed by timestamp."""
     frames: list[pd.DataFrame] = []
-    queue: deque[tuple[datetime, datetime]] = deque(_iter_date_chunks(start, end, MAX_CHUNK_DAYS))
+    queue: deque[tuple[datetime, datetime]] = deque(
+        _iter_date_chunks(start, end, MAX_CHUNK_DAYS)
+    )
     session = _signal21_session()
 
     while queue:
@@ -58,9 +60,11 @@ def fetch_price_series(
             span_days = (chunk_end - chunk_start).days
             if span_days <= MIN_CHUNK_DAYS:
                 warnings.warn(
-                    f"Signal21 price API repeatedly failed for {symbol} between "
-                    f"{chunk_start.date()} and {chunk_end.date()}: {exc}. Skipping chunk.",
+                    "Signal21 price API repeatedly failed for "
+                    f"{symbol} between {chunk_start.date()} and {chunk_end.date()}: "
+                    f"{exc}. Skipping chunk.",
                     RuntimeWarning,
+                    stacklevel=2,
                 )
                 continue
             midpoint = chunk_start + timedelta(days=span_days // 2)
@@ -76,8 +80,8 @@ def fetch_price_series(
 
     df = (
         pd.concat(frames, ignore_index=True)
-            .drop_duplicates(subset=["ts"])
-            .sort_values("ts")
+        .drop_duplicates(subset=["ts"])
+        .sort_values("ts")
     )
     if "price" in df.columns:
         df = df.rename(columns={"price": "px"})
@@ -145,7 +149,9 @@ def _iter_date_chunks(
     return chunks
 
 
-def run_sql_query(query: str, *, page_size: int = 50_000, force_refresh: bool = False) -> pd.DataFrame:
+def run_sql_query(
+    query: str, *, page_size: int = 50_000, force_refresh: bool = False
+) -> pd.DataFrame:
     """Execute a SQL query and return the concatenated dataframe."""
     offset = 0
     frames: list[pd.DataFrame] = []
