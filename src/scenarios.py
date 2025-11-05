@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence
 
 import pandas as pd
 
@@ -14,7 +14,9 @@ class ScenarioConfig:
     rho_candidates: Sequence[float] = (0.3, 0.5, 0.7)
     coinbase_stx: float = 1_000.0
     reward_cycles_blocks: int = 2100
-    stacked_supply_stx: float = 1_350_000_000.0  # placeholder, will be overwritten at runtime
+    stacked_supply_stx: float = (
+        1_350_000_000.0  # placeholder, will be overwritten at runtime
+    )
 
 
 def build_scenarios(

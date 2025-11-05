@@ -4,6 +4,7 @@ numpy
 requests
 python-dateutil
 pyarrow
+duckdb
 plotly
 tenacity
 pytest

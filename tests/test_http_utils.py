@@ -4,8 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src import config
-from src import http_utils
+from src import config, http_utils
 
 
 class DummyResponse:

@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
 
-def read_parquet(path: Path) -> Optional[pd.DataFrame]:
+def read_parquet(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
     df = pd.read_parquet(path)

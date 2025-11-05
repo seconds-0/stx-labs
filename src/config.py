@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
 from pathlib import Path
-from typing import Sequence
 
 from dotenv import load_dotenv
 
@@ -16,6 +15,7 @@ DATA_DIR = Path("data")
 RAW_DATA_DIR = DATA_DIR / "raw"
 CACHE_DIR = DATA_DIR / "cache"
 OUT_DIR = Path("out")
+DUCKDB_PATH = CACHE_DIR / "wallet_metrics.duckdb"
 
 DEFAULT_WINDOWS: Sequence[int] = (30, 90, 180)
 
@@ -28,6 +28,7 @@ HIRO_API_KEY_ENV = "HIRO_API_KEY"
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class RetryConfig:
     wait_max_seconds: float = 8.0
     max_attempts: int = 5
     status_forcelist: tuple[int, ...] = field(
-        default_factory=lambda: (429, 500, 502, 503, 504)
+        default_factory=lambda: (429, 500, 502, 503, 504, 522)
     )
 
 

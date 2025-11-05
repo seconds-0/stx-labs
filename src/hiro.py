@@ -3,22 +3,23 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, Dict, Iterator
+from typing import Any
 
 import pandas as pd
 import requests
 
 from . import config as cfg
 from .cache_utils import read_parquet, write_parquet
-from .config import HIRO_BASE, HIRO_API_KEY_ENV
+from .config import HIRO_API_KEY_ENV, HIRO_BASE
 from .http_utils import RequestOptions, build_session, cached_json_request
 
 BURNCHAIN_REWARDS_ENDPOINT = f"{HIRO_BASE}/extended/v1/burnchain/rewards"
 BLOCK_BY_BURN_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/block/by_burn_block_height"
 POX_CYCLES_ENDPOINT = f"{HIRO_BASE}/extended/v2/pox/cycles"
 TX_BY_BLOCK_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx/block_height"
+TX_LIST_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx"
 
 HIRO_CACHE_DIR = cfg.CACHE_DIR / "hiro"
 HIRO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,9 +51,9 @@ def fetch_burnchain_rewards(
     start_height: int | None = None,
     end_height: int | None = None,
     force_refresh: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Fetch a page of burnchain rewards."""
-    params: Dict[str, Any] = {"limit": limit, "offset": offset}
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
     if start_height is not None:
         params["burn_block_height_gte"] = start_height
     if end_height is not None:
@@ -75,7 +76,7 @@ def iterate_burnchain_rewards(
     end_height: int | None = None,
     page_limit: int = 500,
     force_refresh: bool = False,
-) -> Iterator[Dict[str, Any]]:
+) -> Iterator[dict[str, Any]]:
     offset = 0
     while True:
         payload = fetch_burnchain_rewards(
@@ -88,8 +89,7 @@ def iterate_burnchain_rewards(
         results = payload.get("results", [])
         if not results:
             break
-        for item in results:
-            yield item
+        yield from results
         offset += page_limit
         if len(results) < page_limit:
             break
@@ -107,11 +107,13 @@ def aggregate_rewards_by_burn_block(
         cached = read_parquet(cache_path)
         if cached is not None:
             cached["burn_block_height"] = cached["burn_block_height"].astype(int)
-            cached["reward_amount_sats_sum"] = cached["reward_amount_sats_sum"].astype(int)
+            cached["reward_amount_sats_sum"] = cached["reward_amount_sats_sum"].astype(
+                int
+            )
             cached["reward_recipients"] = cached["reward_recipients"].astype(int)
             return cached.sort_values("burn_block_height")
 
-    records: Dict[int, Dict[str, Any]] = {}
+    records: dict[int, dict[str, Any]] = {}
     for row in iterate_burnchain_rewards(
         start_height=start_height,
         end_height=end_height,
@@ -121,14 +123,22 @@ def aggregate_rewards_by_burn_block(
         reward_amount = int(row["reward_amount"])
         record = records.setdefault(
             burn_height,
-            {"burn_block_height": burn_height, "reward_amount_sats_sum": 0, "reward_recipients": 0},
+            {
+                "burn_block_height": burn_height,
+                "reward_amount_sats_sum": 0,
+                "reward_recipients": 0,
+            },
         )
         record["reward_amount_sats_sum"] += reward_amount
         record["reward_recipients"] += 1
     if not records:
-        df = pd.DataFrame(columns=["burn_block_height", "reward_amount_sats_sum", "reward_recipients"])
+        df = pd.DataFrame(
+            columns=["burn_block_height", "reward_amount_sats_sum", "reward_recipients"]
+        )
     else:
-        df = pd.DataFrame(sorted(records.values(), key=lambda r: r["burn_block_height"]))
+        df = pd.DataFrame(
+            sorted(records.values(), key=lambda r: r["burn_block_height"])
+        )
     write_parquet(cache_path, df)
     return df
 
@@ -137,7 +147,7 @@ def fetch_block_by_burn_height(
     burn_height: int,
     *,
     force_refresh: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     url = f"{BLOCK_BY_BURN_HEIGHT_ENDPOINT}/{burn_height}"
     return cached_json_request(
         RequestOptions(
@@ -150,7 +160,9 @@ def fetch_block_by_burn_height(
     )
 
 
-def fetch_pox_cycles(*, limit: int = 20, offset: int = 0, force_refresh: bool = False) -> Dict[str, Any]:
+def fetch_pox_cycles(
+    *, limit: int = 20, offset: int = 0, force_refresh: bool = False
+) -> dict[str, Any]:
     params = {"limit": min(limit, 20), "offset": offset}
     return cached_json_request(
         RequestOptions(
@@ -206,15 +218,17 @@ def collect_anchor_metadata(
 
     existing = read_parquet(ANCHOR_CACHE_PATH)
     if existing is None or force_refresh:
-        existing = pd.DataFrame(columns=[
-            "burn_block_height",
-            "stacks_block_hash",
-            "stacks_block_height",
-            "miner_txid",
-            "burn_block_time_iso",
-            "burn_block_time",
-            "parent_index_block_hash",
-        ])
+        existing = pd.DataFrame(
+            columns=[
+                "burn_block_height",
+                "stacks_block_hash",
+                "stacks_block_height",
+                "miner_txid",
+                "burn_block_time_iso",
+                "burn_block_time",
+                "parent_index_block_hash",
+            ]
+        )
     else:
         existing["burn_block_height"] = existing["burn_block_height"].astype(int)
 
@@ -222,7 +236,7 @@ def collect_anchor_metadata(
     missing = sorted(requested - cached_heights)
 
     if missing:
-        records: list[Dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
         for height in missing:
             payload = fetch_block_by_burn_height(height, force_refresh=force_refresh)
             if not payload:
@@ -241,7 +255,9 @@ def collect_anchor_metadata(
         if records:
             new_df = pd.DataFrame(records)
             combined = pd.concat([existing, new_df], ignore_index=True)
-            combined = combined.drop_duplicates(subset=["burn_block_height"], keep="last")
+            combined = combined.drop_duplicates(
+                subset=["burn_block_height"], keep="last"
+            )
             write_parquet(ANCHOR_CACHE_PATH, combined)
             existing = combined
 
@@ -255,7 +271,7 @@ def fetch_tx_by_block_height(
     limit: int = 200,
     offset: int = 0,
     force_refresh: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     url = f"{TX_BY_BLOCK_HEIGHT_ENDPOINT}/{block_height}"
     params = {"limit": limit, "offset": offset}
     return cached_json_request(
@@ -268,4 +284,37 @@ def fetch_tx_by_block_height(
             force_refresh=force_refresh,
         )
     )
+
+
+def fetch_transactions_page(
+    *,
+    limit: int = 200,
+    offset: int = 0,
+    include_unanchored: bool = False,
+    force_refresh: bool = False,
+    ttl_seconds: float | None = 600,
+    start_time: int | None = None,
+    end_time: int | None = None,
+) -> dict[str, Any]:
+    """Fetch a page of transactions ordered by newest first."""
+    params: dict[str, Any] = {"limit": min(limit, 200), "offset": offset}
+    if not include_unanchored:
+        params["unanchored"] = "false"
+    if start_time is not None:
+        params["from"] = start_time
+    if end_time is not None:
+        params["to"] = end_time
+    return cached_json_request(
+        RequestOptions(
+            prefix="hiro_tx_pages",
+            session=_hiro_session(),
+            method="GET",
+            url=TX_LIST_ENDPOINT,
+            params=params,
+            force_refresh=force_refresh,
+            ttl_seconds=ttl_seconds,
+        )
+    )
+
+
 ANCHOR_CACHE_PATH = HIRO_CACHE_DIR / "anchor_metadata.parquet"
