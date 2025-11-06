@@ -1,5 +1,6 @@
 jupyterlab
 pandas
+pandas-datareader
 numpy
 requests
 python-dateutil
@@ -13,3 +14,4 @@ black
 ruff
 python-dotenv
 papermill
+yfinance

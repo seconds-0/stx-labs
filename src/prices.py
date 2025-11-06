@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import warnings
 
@@ -14,12 +14,14 @@ from .signal21 import fetch_price_series as fetch_price_series_signal21
 
 
 COINGECKO_IDS = {
-    "STX-USD": ("stacks", "usd"),
+    "STX-USD": ("blockstack", "usd"),
     "BTC-USD": ("bitcoin", "usd"),
 }
 
 PRICE_CACHE_DIR = cfg.CACHE_DIR / "prices"
 PRICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+UTC = timezone.utc
 
 _COINGECKO_SESSION = build_session({"Accept": "application/json", "User-Agent": "stx-labs-notebook/1.0"})
 

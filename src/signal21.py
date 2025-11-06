@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import warnings
 
@@ -20,6 +20,8 @@ from .http_utils import (
 
 PRICE_ENDPOINT = f"{SIGNAL21_BASE}/v1/price"
 SQL_ENDPOINT = f"{SIGNAL21_BASE}/v1/sql-v2"
+
+UTC = timezone.utc
 
 
 def _signal21_session() -> requests.Session:
