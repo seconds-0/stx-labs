@@ -20,6 +20,7 @@ BURNCHAIN_REWARDS_ENDPOINT = f"{HIRO_BASE}/extended/v1/burnchain/rewards"
 BLOCK_BY_BURN_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/block/by_burn_block_height"
 POX_CYCLES_ENDPOINT = f"{HIRO_BASE}/extended/v2/pox/cycles"
 TX_BY_BLOCK_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx/block_height"
+TRANSACTION_HISTORY_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx"
 
 HIRO_CACHE_DIR = cfg.CACHE_DIR / "hiro"
 HIRO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,6 +43,38 @@ def _hiro_session() -> requests.Session:
 
 def _get_api_key() -> str | None:
     return os.getenv(HIRO_API_KEY_ENV)
+
+
+def fetch_transactions_page(
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    include_unanchored: bool = False,
+    end_time: int | None = None,
+    force_refresh: bool = False,
+    ttl_seconds: int = 900,
+) -> Dict[str, Any]:
+    """Fetch a single page of canonical transactions ordered by block time desc."""
+    params: Dict[str, Any] = {
+        "limit": min(limit, 50),
+        "offset": offset,
+        "unanchored": str(include_unanchored).lower(),
+        "order": "desc",
+    }
+    if end_time is not None:
+        params["until_block_time"] = end_time
+
+    return cached_json_request(
+        RequestOptions(
+            prefix="hiro_transactions",
+            session=_hiro_session(),
+            method="GET",
+            url=TRANSACTION_HISTORY_ENDPOINT,
+            params=params,
+            ttl_seconds=ttl_seconds,
+            force_refresh=force_refresh,
+        )
+    )
 
 
 def fetch_burnchain_rewards(

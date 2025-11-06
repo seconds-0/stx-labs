@@ -1,4 +1,4 @@
-.PHONY: setup lab test notebook smoke-notebook notebook-bg notebook-status notebook-tail notebook-stop refresh-prices lint clean
+.PHONY: setup lab test notebook smoke-notebook notebook-bg notebook-status notebook-tail notebook-stop refresh-prices notebook-macro notebook-macro-bg lint clean
 
 VENV?=.venv
 PYTHON?=$(VENV)/bin/python
@@ -6,13 +6,15 @@ PIP?=$(VENV)/bin/pip
 JUPYTER?=$(VENV)/bin/jupyter
 NOTEBOOK_LOG?=out/notebook.log
 NOTEBOOK_PID?=out/notebook.pid
+HISTORY_DAYS?=730
+FORCE_REFRESH?=False
 
 setup:
 	python3 -m venv $(VENV)
 	$(PIP) install --upgrade pip
 	$(PIP) install -r requirements.txt
 
-lab: 
+lab:
 	$(JUPYTER) lab
 
 test:
@@ -70,6 +72,15 @@ notebook-stop:
 
 refresh-prices:
 	rm -f data/cache/prices/*.parquet
+
+notebook-macro:
+	mkdir -p out
+	$(PYTHON) -m papermill notebooks/stx_btc_macro_correlations.ipynb out/stx_btc_macro_correlations_output.ipynb -p HISTORY_DAYS $(HISTORY_DAYS) -p FORCE_REFRESH $(FORCE_REFRESH)
+
+notebook-macro-bg:
+	mkdir -p out
+	nohup $(PYTHON) -m papermill notebooks/stx_btc_macro_correlations.ipynb out/stx_btc_macro_correlations_output.ipynb -p HISTORY_DAYS $(HISTORY_DAYS) -p FORCE_REFRESH $(FORCE_REFRESH) > out/macro_notebook.log 2>&1 &
+	@echo "Macro analysis running in background. Monitor with: tail -f out/macro_notebook.log"
 
 clean:
 	rm -rf data/raw/* out/*
