@@ -24,6 +24,7 @@ HIRO_BASE = os.getenv("HIRO_BASE", "https://api.hiro.so")
 COINGECKO_BASE = os.getenv("COINGECKO_BASE", "https://api.coingecko.com/api/v3")
 
 HIRO_API_KEY_ENV = "HIRO_API_KEY"
+COINGECKO_API_KEY = os.getenv("COIN_GECKO_KEY")
 
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -38,7 +39,7 @@ class RetryConfig:
     wait_max_seconds: float = 8.0
     max_attempts: int = 5
     status_forcelist: tuple[int, ...] = field(
-        default_factory=lambda: (429, 500, 502, 503, 504)
+        default_factory=lambda: (429, 500, 502, 503, 504, 522, 525)
     )
 
 

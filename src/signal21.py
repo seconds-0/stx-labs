@@ -145,13 +145,13 @@ def _iter_date_chunks(
     return chunks
 
 
-def run_sql_query(query: str, *, page_size: int = 50_000, force_refresh: bool = False) -> pd.DataFrame:
+def run_sql_query(query: str, *, page_size: int | None = None, force_refresh: bool = False) -> pd.DataFrame:
     """Execute a SQL query and return the concatenated dataframe."""
     offset = 0
     frames: list[pd.DataFrame] = []
     session = _signal21_session()
     while True:
-        body = {"query": query, "offset": offset, "limit": page_size}
+        body: dict[str, Any] = {"query": query, "offset": offset}
         payload = cached_json_request(
             RequestOptions(
                 prefix="signal21_sql",
@@ -162,14 +162,15 @@ def run_sql_query(query: str, *, page_size: int = 50_000, force_refresh: bool = 
                 force_refresh=force_refresh,
             )
         )
-        data = payload.get("data", {})
+        data = payload.get("columns") or payload.get("data", {})
         records = _columnar_to_records(data)
         if not records:
             break
         frames.append(pd.DataFrame.from_records(records))
-        if len(records) < page_size:
+        next_offset = payload.get("next")
+        if next_offset is None:
             break
-        offset += page_size
+        offset = int(next_offset)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)

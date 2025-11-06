@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Dict, Iterator
@@ -13,7 +14,7 @@ import requests
 from . import config as cfg
 from .cache_utils import read_parquet, write_parquet
 from .config import HIRO_BASE, HIRO_API_KEY_ENV
-from .http_utils import RequestOptions, build_session, cached_json_request
+from .http_utils import RequestOptions, TransientHTTPError, build_session, cached_json_request
 
 BURNCHAIN_REWARDS_ENDPOINT = f"{HIRO_BASE}/extended/v1/burnchain/rewards"
 BLOCK_BY_BURN_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/block/by_burn_block_height"
@@ -45,14 +46,14 @@ def _get_api_key() -> str | None:
 
 def fetch_burnchain_rewards(
     *,
-    limit: int = 500,
+    limit: int = 250,
     offset: int = 0,
     start_height: int | None = None,
     end_height: int | None = None,
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
     """Fetch a page of burnchain rewards."""
-    params: Dict[str, Any] = {"limit": limit, "offset": offset}
+    params: Dict[str, Any] = {"limit": min(limit, 250), "offset": offset}
     if start_height is not None:
         params["burn_block_height_gte"] = start_height
     if end_height is not None:
@@ -77,9 +78,11 @@ def iterate_burnchain_rewards(
     force_refresh: bool = False,
 ) -> Iterator[Dict[str, Any]]:
     offset = 0
+    page_size = min(page_limit, 250)
+    reached_lower_bound = False
     while True:
         payload = fetch_burnchain_rewards(
-            limit=page_limit,
+            limit=page_size,
             offset=offset,
             start_height=start_height,
             end_height=end_height,
@@ -89,9 +92,25 @@ def iterate_burnchain_rewards(
         if not results:
             break
         for item in results:
+            burn_height = int(item["burn_block_height"])
+            if end_height is not None and burn_height > end_height:
+                continue
+            if start_height is not None and burn_height < start_height:
+                reached_lower_bound = True
+                continue
             yield item
-        offset += page_limit
-        if len(results) < page_limit:
+        if reached_lower_bound:
+            break
+        offset += page_size
+        if len(results) < page_size:
+            if start_height is not None and not reached_lower_bound:
+                warnings.warn(
+                    (
+                        "Reached end of Hiro rewards results without hitting "
+                        f"requested start_height={start_height}."
+                    ),
+                    RuntimeWarning,
+                )
             break
 
 
@@ -224,7 +243,20 @@ def collect_anchor_metadata(
     if missing:
         records: list[Dict[str, Any]] = []
         for height in missing:
-            payload = fetch_block_by_burn_height(height, force_refresh=force_refresh)
+            try:
+                payload = fetch_block_by_burn_height(height, force_refresh=force_refresh)
+            except TransientHTTPError as exc:
+                warnings.warn(
+                    f"Hiro block lookup transient failure for burn height {height}: {exc}",
+                    RuntimeWarning,
+                )
+                continue
+            except requests.HTTPError as exc:
+                response = getattr(exc, "response", None)
+                status = response.status_code if response is not None else None
+                if status == 404:
+                    continue
+                raise
             if not payload:
                 continue
             records.append(
@@ -252,12 +284,12 @@ def collect_anchor_metadata(
 def fetch_tx_by_block_height(
     block_height: int,
     *,
-    limit: int = 200,
+    limit: int = 50,
     offset: int = 0,
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
     url = f"{TX_BY_BLOCK_HEIGHT_ENDPOINT}/{block_height}"
-    params = {"limit": limit, "offset": offset}
+    params = {"limit": min(limit, 50), "offset": offset}
     return cached_json_request(
         RequestOptions(
             prefix="hiro_block_tx",

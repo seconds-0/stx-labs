@@ -32,6 +32,10 @@
   ```bash
   rm -rf data/raw/* data/cache/* out/*
   ```
+- Drop only cached price series (handy after provider outages):
+  ```bash
+  make refresh-prices
+  ```
 - Re-run notebook to recreate exports (Parquet, CSV, charts).
 
 ## 5. Headless Execution (optional)
@@ -44,11 +48,18 @@
   ```bash
   make smoke-notebook
   ```
+- Long runs often take 45–60 minutes. Launch them in the background with live logs:
+  ```bash
+  make notebook-bg     # starts papermill asynchronously, logs -> out/notebook.log
+  make notebook-status # check PID still running
+  make notebook-tail   # follow progress (Ctrl+C to detach)
+  make notebook-stop   # terminate the background run if needed
+  ```
 
 ## 6. Git Workflow
 - Standard sequence:
-  ```bash
-  git pull --ff-only
+```bash
+git pull --ff-only
   # make edits / run notebook
   git status
   git add <files>

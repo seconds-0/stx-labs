@@ -14,10 +14,67 @@ from .pox_yields import calculate_apy_btc
 @dataclass(frozen=True)
 class ScenarioConfig:
     fee_per_tx_stx: float = const.DEFAULT_FEE_PER_TX_STX
-    rho_candidates: Sequence[float] = (0.3, const.DEFAULT_COMMITMENT_RATIO, 0.7)
+    rho_candidates: Sequence[float] = (0.92, const.DEFAULT_COMMITMENT_RATIO, 1.10)
     coinbase_stx: float = const.DEFAULT_COINBASE_STX
     reward_cycles_blocks: int = const.POX_CYCLE_BLOCKS
     stacked_supply_stx: float = 1_350_000_000.0  # placeholder, will be overwritten at runtime
+
+
+def summarize_miner_rewards(
+    rho: float,
+    *,
+    stx_btc_price: float,
+    fees_stx: float,
+    coinbase_stx: float | None = None,
+    btc_usd_price: float | None = None,
+    stx_usd_price: float | None = None,
+    stacked_supply_stx: float | None = None,
+    cycle_blocks: int | None = None,
+) -> dict[str, float | None]:
+    """Summarise miner BTC commitments and stacker yields for a given reward setup."""
+    coinbase_value = coinbase_stx if coinbase_stx is not None else const.DEFAULT_COINBASE_STX
+    blocks_per_cycle = cycle_blocks if cycle_blocks is not None else const.POX_CYCLE_BLOCKS
+
+    reward_stx_total = coinbase_value + fees_stx
+    reward_value_btc = reward_stx_total * stx_btc_price
+    miner_btc_per_tenure = rho * reward_value_btc
+    miner_btc_per_cycle = miner_btc_per_tenure * blocks_per_cycle
+    cycles_per_year = const.DAYS_PER_YEAR / const.POX_CYCLE_DAYS
+    miner_btc_per_year = miner_btc_per_cycle * cycles_per_year
+
+    reward_value_usd = None
+    miner_btc_per_tenure_usd = None
+    miner_btc_per_cycle_usd = None
+    miner_btc_per_year_usd = None
+    if stx_usd_price is not None:
+        reward_value_usd = reward_stx_total * stx_usd_price
+    if btc_usd_price is not None:
+        miner_btc_per_tenure_usd = miner_btc_per_tenure * btc_usd_price
+        miner_btc_per_cycle_usd = miner_btc_per_cycle * btc_usd_price
+        miner_btc_per_year_usd = miner_btc_per_year * btc_usd_price
+
+    stacker_apy_pct = None
+    if stacked_supply_stx:
+        total_btc_sats = miner_btc_per_cycle * const.SATS_PER_BTC
+        total_stacked_ustx = stacked_supply_stx * const.USTX_PER_STX
+        stacker_apy_pct = calculate_apy_btc(
+            total_btc_sats=total_btc_sats,
+            total_stacked_ustx=total_stacked_ustx,
+        )
+
+    return {
+        "rho_effective": rho,
+        "reward_stx_total": reward_stx_total,
+        "reward_value_btc": reward_value_btc,
+        "reward_value_usd": reward_value_usd,
+        "miner_btc_per_tenure": miner_btc_per_tenure,
+        "miner_btc_per_tenure_usd": miner_btc_per_tenure_usd,
+        "miner_btc_per_cycle": miner_btc_per_cycle,
+        "miner_btc_per_cycle_usd": miner_btc_per_cycle_usd,
+        "miner_btc_per_year": miner_btc_per_year,
+        "miner_btc_per_year_usd": miner_btc_per_year_usd,
+        "stacker_apy_pct": stacker_apy_pct,
+    }
 
 
 def build_scenarios(

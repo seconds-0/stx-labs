@@ -10,8 +10,13 @@ from __future__ import annotations
 # PoX Protocol Constants
 # =============================================================================
 
+# Bitcoin blocks per day
+# Source: Bitcoin protocol (target 10 minutes per block = 6 blocks/hour × 24 hours)
+# Note: Actual rate varies slightly; this is the theoretical target
+BITCOIN_BLOCKS_PER_DAY = 144
+
 # PoX cycle duration in days
-# Source: Stacks protocol specification (~2100 Bitcoin blocks ÷ ~144 blocks/day)
+# Source: Stacks protocol specification (POX_CYCLE_BLOCKS ÷ BITCOIN_BLOCKS_PER_DAY ≈ 14.58 days, rounded to 14)
 POX_CYCLE_DAYS = 14
 
 # Bitcoin blocks per PoX cycle
@@ -37,9 +42,9 @@ DEFAULT_CIRCULATING_SUPPLY_USTX = 1_380_000_000 * 1_000_000  # 1.38B STX
 DEFAULT_STX_BTC_PRICE = 0.00003
 
 # Default BTC commitment ratio (rho)
-# Source: Historical median observed ratio of (BTC committed / reward value)
-# Range: 0.0 (no commitment) to 2.0 (miners overbid)
-DEFAULT_COMMITMENT_RATIO = 0.5
+# Source: docs/rho-validation-investigation.md (analysis window: 2024-11-03 → 2025-09-26)
+# Range: 0.0 (no commitment) to 2.0 (miners overbid, clipped)
+DEFAULT_COMMITMENT_RATIO = 1.04
 
 # Default coinbase reward per tenure in STX
 # Source: Stacks protocol specification

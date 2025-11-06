@@ -20,16 +20,20 @@ Notebook: `notebooks/stx_pox_flywheel.ipynb`. Run top-to-bottom; configuration c
 - Adjust analysis horizon via the notebook parameters or papermill CLI arguments (`make notebook` runs with defaults).
 
 ## Data Strategy
-- **Primary APIs:** Hiro Stacks API for on-chain metadata; alternative for prices (e.g., CoinGecko) with Signal21 support as optional.
-- **Caching:** All expensive pulls write to `data/cache/`. Use `make refresh-prices` / `make refresh-data` (to be added) to invalidate caches intentionally.
+- **Primary APIs:** Hiro Stacks API for on-chain metadata; CoinGecko for prices with Signal21 as fallback.
+- **Caching:** All expensive pulls write to `data/cache/`. Use `make refresh-prices` to drop cached price parquet files (pair with `make notebook` to rebuild).
 - **Fallbacks:** If a provider is unreachable, the notebook surfaces warnings and continues with cached data or alternate sources.
 
 ## Useful Commands
 ```bash
-make test         # pytest suite (offline-friendly via mocks/fixtures)
-make lint         # black + ruff
-make notebook     # papermill execution saving to out/stx_pox_flywheel_run.ipynb
-make smoke-notebook  # papermill smoke run (30-day window, cache only)
+make test             # pytest suite (offline-friendly via mocks/fixtures)
+make lint             # black + ruff
+make notebook         # papermill execution saving to out/stx_pox_flywheel_run.ipynb
+make smoke-notebook   # papermill smoke run (30-day window, cache only)
+make notebook-bg      # launch papermill in background, log to out/notebook.log
+make notebook-status  # check on background run PID
+make notebook-tail    # follow the notebook log
+make refresh-prices   # delete cached price parquet files
 ```
 
 ## Documentation
