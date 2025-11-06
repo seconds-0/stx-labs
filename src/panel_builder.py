@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import warnings
 
 import pandas as pd
+
+from . import cycle_utils
+from . import pox_yields
 
 
 @dataclass
@@ -37,8 +42,8 @@ def build_tenure_panel(
     )
 
     panel["fees_stx_sum"] = panel["fees_stx_sum"].fillna(0.0)
-    panel["reward_amount_sats_sum"] = panel["reward_amount_sats_sum"].fillna(0)
     panel["reward_recipients"] = panel["reward_recipients"].fillna(0).astype(int)
+    panel["reward_amount_sats_sum"] = panel["reward_amount_sats_sum"].astype("Float64")
     panel["burn_block_time_iso"] = pd.to_datetime(panel["burn_block_time_iso"])
 
     panel["coinbase_stx"] = cfg.coinbase_stx
@@ -58,25 +63,31 @@ def build_tenure_panel(
     )
     panel = panel.rename(columns={"ts": "price_ts"})
 
-    panel["reward_value_sats"] = (
-        panel["reward_stx_total"] * panel["stx_btc"] * 1e8
-    ).fillna(0.0)
-    panel["rho"] = panel["reward_amount_sats_sum"] / panel["reward_value_sats"].replace(
-        {0: pd.NA}
-    )
+    panel["reward_value_sats"] = (panel["reward_stx_total"] * panel["stx_btc"] * 1e8).fillna(0.0)
+    denominator = panel["reward_value_sats"].replace({0: pd.NA})
+    panel["rho"] = panel["reward_amount_sats_sum"] / denominator
     panel["rho"] = panel["rho"].clip(cfg.rho_clip_min, cfg.rho_clip_max)
-    panel["rho"] = panel["rho"].fillna(0.0)
 
     panel["rho_flag_div0"] = panel["reward_value_sats"] == 0
-    panel["coinbase_flag"] = (
-        panel["coinbase_estimate"] - cfg.coinbase_stx
-    ).abs() > 1e-6
+    panel["rho_flag_missing"] = panel["reward_amount_sats_sum"].isna()
+    panel.loc[panel["rho_flag_missing"], "rho"] = pd.NA
+    panel["rho"] = panel["rho"].astype("Float64")
+    panel["coinbase_flag"] = (panel["coinbase_estimate"] - cfg.coinbase_stx).abs() > 1e-6
     return panel
 
 
 def merge_cycle_metadata(panel: pd.DataFrame, cycles: pd.DataFrame) -> pd.DataFrame:
     """Annotate panel with PoX cycle identifiers."""
     if cycles.empty:
+        panel["cycle_id"] = pd.NA
+        return panel
+    required_columns = {"start_burn_block_height", "end_burn_block_height"}
+    if not required_columns.issubset(cycles.columns):
+        warnings.warn(
+            "Cycle metadata missing start/end burn heights; skipping cycle annotation.",
+            RuntimeWarning,
+        )
+        panel = panel.copy()
         panel["cycle_id"] = pd.NA
         return panel
     cycles = cycles.rename(
@@ -93,4 +104,72 @@ def merge_cycle_metadata(panel: pd.DataFrame, cycles: pd.DataFrame) -> pd.DataFr
             panel["burn_block_height"] <= row["cycle_end_burn"]
         )
         panel.loc[mask, "cycle_id"] = row["cycle_id"]
+    return panel
+
+
+def annotate_panel_with_yields(
+    panel: pd.DataFrame,
+    *,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Annotate tenure panel with PoX yield metrics.
+
+    Adds columns:
+    - cycle_number: PoX cycle number (mapped from burn_block_height)
+    - apy_btc: BTC-denominated annual percentage yield
+    - apy_usd: USD-denominated APY (if price data available)
+    - participation_rate_pct: Stacking participation as % of supply
+    - total_stacked_ustx: Total STX stacked in the cycle (microSTX)
+    - total_btc_sats: Total BTC rewards in the cycle (satoshis)
+
+    Args:
+        panel: Tenure panel DataFrame (must have burn_block_height column)
+        force_refresh: If True, bypass cache and fetch fresh data
+
+    Returns:
+        Panel with yield metrics added via left join on cycle_number
+    """
+    if "burn_block_height" not in panel.columns:
+        raise ValueError("Panel must have burn_block_height column")
+
+    # Fetch PoX cycle data
+    cycles_df = pox_yields.fetch_pox_cycles_data(force_refresh=force_refresh)
+
+    if cycles_df.empty:
+        # No cycle data available, add empty columns
+        panel = panel.copy()
+        panel["cycle_number"] = pd.NA
+        panel["apy_btc"] = pd.NA
+        panel["apy_usd"] = pd.NA
+        panel["participation_rate_pct"] = pd.NA
+        panel["total_stacked_ustx"] = pd.NA
+        panel["total_btc_sats"] = pd.NA
+        return panel
+
+    # Fetch rewards aggregated by cycle
+    rewards_df = pox_yields.aggregate_rewards_by_cycle(force_refresh=force_refresh)
+
+    # Calculate APY metrics
+    # Note: We pass None for prices_df here since we'll use the panel's existing prices
+    apy_df = pox_yields.calculate_cycle_apy(cycles_df, rewards_df, prices_df=None)
+
+    # Map burn_block_heights to PoX cycles
+    panel = cycle_utils.map_burn_heights_to_cycles(
+        panel, cycles_df, "burn_block_height"
+    )
+
+    # Merge yield metrics onto panel
+    panel = panel.merge(
+        apy_df[[
+            "cycle_number",
+            "apy_btc",
+            "apy_usd",
+            "participation_rate_pct",
+            "total_stacked_ustx",
+            "total_btc_sats"
+        ]],
+        on="cycle_number",
+        how="left"
+    )
+
     return panel

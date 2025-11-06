@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import warnings
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
+import warnings
 
 import pandas as pd
 import requests
@@ -41,9 +41,7 @@ def fetch_price_series(
 ) -> pd.DataFrame:
     """Fetch price data for a symbol and return as dataframe indexed by timestamp."""
     frames: list[pd.DataFrame] = []
-    queue: deque[tuple[datetime, datetime]] = deque(
-        _iter_date_chunks(start, end, MAX_CHUNK_DAYS)
-    )
+    queue: deque[tuple[datetime, datetime]] = deque(_iter_date_chunks(start, end, MAX_CHUNK_DAYS))
     session = _signal21_session()
 
     while queue:
@@ -60,11 +58,9 @@ def fetch_price_series(
             span_days = (chunk_end - chunk_start).days
             if span_days <= MIN_CHUNK_DAYS:
                 warnings.warn(
-                    "Signal21 price API repeatedly failed for "
-                    f"{symbol} between {chunk_start.date()} and {chunk_end.date()}: "
-                    f"{exc}. Skipping chunk.",
+                    f"Signal21 price API repeatedly failed for {symbol} between "
+                    f"{chunk_start.date()} and {chunk_end.date()}: {exc}. Skipping chunk.",
                     RuntimeWarning,
-                    stacklevel=2,
                 )
                 continue
             midpoint = chunk_start + timedelta(days=span_days // 2)
@@ -80,8 +76,8 @@ def fetch_price_series(
 
     df = (
         pd.concat(frames, ignore_index=True)
-        .drop_duplicates(subset=["ts"])
-        .sort_values("ts")
+            .drop_duplicates(subset=["ts"])
+            .sort_values("ts")
     )
     if "price" in df.columns:
         df = df.rename(columns={"price": "px"})
@@ -149,15 +145,13 @@ def _iter_date_chunks(
     return chunks
 
 
-def run_sql_query(
-    query: str, *, page_size: int = 50_000, force_refresh: bool = False
-) -> pd.DataFrame:
+def run_sql_query(query: str, *, page_size: int | None = None, force_refresh: bool = False) -> pd.DataFrame:
     """Execute a SQL query and return the concatenated dataframe."""
     offset = 0
     frames: list[pd.DataFrame] = []
     session = _signal21_session()
     while True:
-        body = {"query": query, "offset": offset, "limit": page_size}
+        body: dict[str, Any] = {"query": query, "offset": offset}
         payload = cached_json_request(
             RequestOptions(
                 prefix="signal21_sql",
@@ -168,14 +162,15 @@ def run_sql_query(
                 force_refresh=force_refresh,
             )
         )
-        data = payload.get("data", {})
+        data = payload.get("columns") or payload.get("data", {})
         records = _columnar_to_records(data)
         if not records:
             break
         frames.append(pd.DataFrame.from_records(records))
-        if len(records) < page_size:
+        next_offset = payload.get("next")
+        if next_offset is None:
             break
-        offset += page_size
+        offset = int(next_offset)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
