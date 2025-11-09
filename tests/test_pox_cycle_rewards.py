@@ -11,5 +11,6 @@ def test_calculate_cycle_boundary_basic() -> None:
     )
     assert boundary.prepare_start_burn_height == 666050 + 89 * 2100
     assert boundary.reward_start_burn_height == boundary.prepare_start_burn_height + 100
-    assert boundary.reward_end_burn_height == boundary.reward_start_burn_height + 2000 - 1
-
+    assert (
+        boundary.reward_end_burn_height == boundary.reward_start_burn_height + 2000 - 1
+    )

@@ -26,6 +26,7 @@ import pandas as pd
 
 class YieldProduct(Enum):
     """Alternative Bitcoin yield products for comparison."""
+
     POX = "PoX Stacking"
     WBTC_AAVE = "wBTC Lending (Aave)"
     WBTC_COMPOUND = "wBTC Lending (Compound)"
@@ -37,6 +38,7 @@ class YieldProduct(Enum):
 
 class RiskLevel(Enum):
     """Risk categorization for yield products."""
+
     LOW = 1
     MEDIUM = 2
     HIGH = 3
@@ -59,6 +61,7 @@ class YieldBenchmark:
         regulatory_risk: Regulatory risk level
         notes: Additional context
     """
+
     product: YieldProduct
     apy_min: float
     apy_max: float
@@ -85,7 +88,7 @@ BENCHMARK_YIELDS: Dict[YieldProduct, YieldBenchmark] = {
         technical_risk=RiskLevel.MEDIUM,
         counterparty_risk=RiskLevel.LOW,
         regulatory_risk=RiskLevel.MEDIUM,
-        notes="BTC-denominated yield from miner commitments; volatility driven by participation and miner economics"
+        notes="BTC-denominated yield from miner commitments; volatility driven by participation and miner economics",
     ),
     YieldProduct.WBTC_AAVE: YieldBenchmark(
         product=YieldProduct.WBTC_AAVE,
@@ -97,7 +100,7 @@ BENCHMARK_YIELDS: Dict[YieldProduct, YieldBenchmark] = {
         technical_risk=RiskLevel.MEDIUM,
         counterparty_risk=RiskLevel.MEDIUM,
         regulatory_risk=RiskLevel.MEDIUM,
-        notes="DeFi lending on Ethereum; yields vary with utilization"
+        notes="DeFi lending on Ethereum; yields vary with utilization",
     ),
     YieldProduct.WBTC_COMPOUND: YieldBenchmark(
         product=YieldProduct.WBTC_COMPOUND,
@@ -109,7 +112,7 @@ BENCHMARK_YIELDS: Dict[YieldProduct, YieldBenchmark] = {
         technical_risk=RiskLevel.MEDIUM,
         counterparty_risk=RiskLevel.MEDIUM,
         regulatory_risk=RiskLevel.MEDIUM,
-        notes="DeFi lending on Ethereum; historically lower than Aave"
+        notes="DeFi lending on Ethereum; historically lower than Aave",
     ),
     YieldProduct.CEFI_BLOCKFI: YieldBenchmark(
         product=YieldProduct.CEFI_BLOCKFI,
@@ -121,7 +124,7 @@ BENCHMARK_YIELDS: Dict[YieldProduct, YieldBenchmark] = {
         technical_risk=RiskLevel.LOW,
         counterparty_risk=RiskLevel.VERY_HIGH,
         regulatory_risk=RiskLevel.VERY_HIGH,
-        notes="Ceased operations 2022; historical reference only"
+        notes="Ceased operations 2022; historical reference only",
     ),
     YieldProduct.CEFI_NEXO: YieldBenchmark(
         product=YieldProduct.CEFI_NEXO,
@@ -133,7 +136,7 @@ BENCHMARK_YIELDS: Dict[YieldProduct, YieldBenchmark] = {
         technical_risk=RiskLevel.LOW,
         counterparty_risk=RiskLevel.HIGH,
         regulatory_risk=RiskLevel.HIGH,
-        notes="Centralized custody; rates vary by tier and market conditions"
+        notes="Centralized custody; rates vary by tier and market conditions",
     ),
     YieldProduct.CEFI_CELSIUS: YieldBenchmark(
         product=YieldProduct.CEFI_CELSIUS,
@@ -145,7 +148,7 @@ BENCHMARK_YIELDS: Dict[YieldProduct, YieldBenchmark] = {
         technical_risk=RiskLevel.LOW,
         counterparty_risk=RiskLevel.VERY_HIGH,
         regulatory_risk=RiskLevel.VERY_HIGH,
-        notes="Bankrupt 2022; historical reference only"
+        notes="Bankrupt 2022; historical reference only",
     ),
 }
 
@@ -159,18 +162,20 @@ def get_benchmark_yields() -> pd.DataFrame:
     """
     records = []
     for benchmark in BENCHMARK_YIELDS.values():
-        records.append({
-            "product": benchmark.product.value,
-            "apy_min": benchmark.apy_min,
-            "apy_max": benchmark.apy_max,
-            "apy_mean": benchmark.apy_mean,
-            "apy_median": benchmark.apy_median,
-            "apy_std": benchmark.apy_std,
-            "technical_risk": benchmark.technical_risk.name,
-            "counterparty_risk": benchmark.counterparty_risk.name,
-            "regulatory_risk": benchmark.regulatory_risk.name,
-            "notes": benchmark.notes,
-        })
+        records.append(
+            {
+                "product": benchmark.product.value,
+                "apy_min": benchmark.apy_min,
+                "apy_max": benchmark.apy_max,
+                "apy_mean": benchmark.apy_mean,
+                "apy_median": benchmark.apy_median,
+                "apy_std": benchmark.apy_std,
+                "technical_risk": benchmark.technical_risk.name,
+                "counterparty_risk": benchmark.counterparty_risk.name,
+                "regulatory_risk": benchmark.regulatory_risk.name,
+                "notes": benchmark.notes,
+            }
+        )
     return pd.DataFrame(records)
 
 
@@ -226,7 +231,7 @@ def calculate_yield_advantage_ratio(
 
     alt_apy = benchmark.apy_median if use_median else benchmark.apy_mean
     if alt_apy == 0:
-        return float('inf') if pox_apy > 0 else 1.0
+        return float("inf") if pox_apy > 0 else 1.0
 
     return pox_apy / alt_apy
 
@@ -253,7 +258,7 @@ def calculate_volatility_ratio(
         raise ValueError(f"Unknown product: {alternative_product}")
 
     if benchmark.apy_std == 0:
-        return float('inf') if pox_apy_std > 0 else 1.0
+        return float("inf") if pox_apy_std > 0 else 1.0
 
     return pox_apy_std / benchmark.apy_std
 
@@ -278,7 +283,7 @@ def calculate_sharpe_ratio(
         Here we adapt it for yield products.
     """
     if std_apy == 0:
-        return float('inf') if mean_apy > risk_free_rate else 0.0
+        return float("inf") if mean_apy > risk_free_rate else 0.0
 
     return (mean_apy - risk_free_rate) / std_apy
 
@@ -336,9 +341,9 @@ def calculate_risk_score(
     w_tech, w_counter, w_reg = weights
 
     score = (
-        technical_risk.value * w_tech +
-        counterparty_risk.value * w_counter +
-        regulatory_risk.value * w_reg
+        technical_risk.value * w_tech
+        + counterparty_risk.value * w_counter
+        + regulatory_risk.value * w_reg
     )
 
     return round(score, 2)
@@ -395,16 +400,25 @@ def compare_yields_across_products(
 
         alt_sharpe = calculate_sharpe_ratio(benchmark.apy_mean, benchmark.apy_std)
 
-        results.append({
-            "product": product.value,
-            "alt_apy_median": benchmark.apy_median,
-            "yield_advantage_pp": round(pox_apy - benchmark.apy_median, 2),
-            "yield_ratio": round(pox_apy / benchmark.apy_median if benchmark.apy_median > 0 else float('inf'), 2),
-            "pox_sharpe": round(pox_sharpe, 2),
-            "alt_sharpe": round(alt_sharpe, 2),
-            "sharpe_advantage": round(pox_sharpe - alt_sharpe, 2),
-            "risk_score": get_product_risk_score(product),
-        })
+        results.append(
+            {
+                "product": product.value,
+                "alt_apy_median": benchmark.apy_median,
+                "yield_advantage_pp": round(pox_apy - benchmark.apy_median, 2),
+                "yield_ratio": round(
+                    (
+                        pox_apy / benchmark.apy_median
+                        if benchmark.apy_median > 0
+                        else float("inf")
+                    ),
+                    2,
+                ),
+                "pox_sharpe": round(pox_sharpe, 2),
+                "alt_sharpe": round(alt_sharpe, 2),
+                "sharpe_advantage": round(pox_sharpe - alt_sharpe, 2),
+                "risk_score": get_product_risk_score(product),
+            }
+        )
 
     return pd.DataFrame(results).sort_values("yield_advantage_pp", ascending=False)
 
@@ -473,7 +487,7 @@ def get_competitive_positioning(
 
     # Calculate advantages
     yield_adv_vs_best = pox_apy - best_alt_apy if best_alt_product else 0.0
-    yield_ratio_vs_best = pox_apy / best_alt_apy if best_alt_apy > 0 else float('inf')
+    yield_ratio_vs_best = pox_apy / best_alt_apy if best_alt_apy > 0 else float("inf")
 
     # Calculate average advantage
     total_advantage = 0.0

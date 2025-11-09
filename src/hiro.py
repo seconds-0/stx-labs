@@ -14,13 +14,19 @@ import requests
 from . import config as cfg
 from .cache_utils import read_parquet, write_parquet
 from .config import HIRO_BASE, HIRO_API_KEY_ENV
-from .http_utils import RequestOptions, TransientHTTPError, build_session, cached_json_request
+from .http_utils import (
+    RequestOptions,
+    TransientHTTPError,
+    build_session,
+    cached_json_request,
+)
 
 BURNCHAIN_REWARDS_ENDPOINT = f"{HIRO_BASE}/extended/v1/burnchain/rewards"
 BLOCK_BY_BURN_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/block/by_burn_block_height"
 POX_CYCLES_ENDPOINT = f"{HIRO_BASE}/extended/v2/pox/cycles"
 TX_BY_BLOCK_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx/block_height"
 TRANSACTION_HISTORY_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx"
+ADDRESS_BALANCES_ENDPOINT = f"{HIRO_BASE}/extended/v1/address"
 
 HIRO_CACHE_DIR = cfg.CACHE_DIR / "hiro"
 HIRO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,19 +56,28 @@ def fetch_transactions_page(
     limit: int = 50,
     offset: int = 0,
     include_unanchored: bool = False,
+    start_time: int | None = None,
     end_time: int | None = None,
+    sort_by: str | None = None,
     force_refresh: bool = False,
     ttl_seconds: int = 900,
 ) -> Dict[str, Any]:
-    """Fetch a single page of canonical transactions ordered by block time desc."""
+    """Fetch a page of canonical transactions with optional burn time filtering."""
     params: Dict[str, Any] = {
         "limit": min(limit, 50),
         "offset": offset,
         "unanchored": str(include_unanchored).lower(),
         "order": "desc",
     }
+    if start_time is not None:
+        params["start_time"] = start_time
     if end_time is not None:
-        params["until_block_time"] = end_time
+        params["end_time"] = end_time
+    effective_sort = sort_by
+    if effective_sort is None and (start_time is not None or end_time is not None):
+        effective_sort = "burn_block_time"
+    if effective_sort is not None:
+        params["sort_by"] = effective_sort
 
     return cached_json_request(
         RequestOptions(
@@ -159,7 +174,9 @@ def aggregate_rewards_by_burn_block(
         cached = read_parquet(cache_path)
         if cached is not None:
             cached["burn_block_height"] = cached["burn_block_height"].astype(int)
-            cached["reward_amount_sats_sum"] = cached["reward_amount_sats_sum"].astype(int)
+            cached["reward_amount_sats_sum"] = cached["reward_amount_sats_sum"].astype(
+                int
+            )
             cached["reward_recipients"] = cached["reward_recipients"].astype(int)
             return cached.sort_values("burn_block_height")
 
@@ -173,14 +190,22 @@ def aggregate_rewards_by_burn_block(
         reward_amount = int(row["reward_amount"])
         record = records.setdefault(
             burn_height,
-            {"burn_block_height": burn_height, "reward_amount_sats_sum": 0, "reward_recipients": 0},
+            {
+                "burn_block_height": burn_height,
+                "reward_amount_sats_sum": 0,
+                "reward_recipients": 0,
+            },
         )
         record["reward_amount_sats_sum"] += reward_amount
         record["reward_recipients"] += 1
     if not records:
-        df = pd.DataFrame(columns=["burn_block_height", "reward_amount_sats_sum", "reward_recipients"])
+        df = pd.DataFrame(
+            columns=["burn_block_height", "reward_amount_sats_sum", "reward_recipients"]
+        )
     else:
-        df = pd.DataFrame(sorted(records.values(), key=lambda r: r["burn_block_height"]))
+        df = pd.DataFrame(
+            sorted(records.values(), key=lambda r: r["burn_block_height"])
+        )
     write_parquet(cache_path, df)
     return df
 
@@ -202,7 +227,9 @@ def fetch_block_by_burn_height(
     )
 
 
-def fetch_pox_cycles(*, limit: int = 20, offset: int = 0, force_refresh: bool = False) -> Dict[str, Any]:
+def fetch_pox_cycles(
+    *, limit: int = 20, offset: int = 0, force_refresh: bool = False
+) -> Dict[str, Any]:
     params = {"limit": min(limit, 20), "offset": offset}
     return cached_json_request(
         RequestOptions(
@@ -258,15 +285,17 @@ def collect_anchor_metadata(
 
     existing = read_parquet(ANCHOR_CACHE_PATH)
     if existing is None or force_refresh:
-        existing = pd.DataFrame(columns=[
-            "burn_block_height",
-            "stacks_block_hash",
-            "stacks_block_height",
-            "miner_txid",
-            "burn_block_time_iso",
-            "burn_block_time",
-            "parent_index_block_hash",
-        ])
+        existing = pd.DataFrame(
+            columns=[
+                "burn_block_height",
+                "stacks_block_hash",
+                "stacks_block_height",
+                "miner_txid",
+                "burn_block_time_iso",
+                "burn_block_time",
+                "parent_index_block_hash",
+            ]
+        )
     else:
         existing["burn_block_height"] = existing["burn_block_height"].astype(int)
 
@@ -277,7 +306,9 @@ def collect_anchor_metadata(
         records: list[Dict[str, Any]] = []
         for height in missing:
             try:
-                payload = fetch_block_by_burn_height(height, force_refresh=force_refresh)
+                payload = fetch_block_by_burn_height(
+                    height, force_refresh=force_refresh
+                )
             except TransientHTTPError as exc:
                 warnings.warn(
                     f"Hiro block lookup transient failure for burn height {height}: {exc}",
@@ -306,7 +337,9 @@ def collect_anchor_metadata(
         if records:
             new_df = pd.DataFrame(records)
             combined = pd.concat([existing, new_df], ignore_index=True)
-            combined = combined.drop_duplicates(subset=["burn_block_height"], keep="last")
+            combined = combined.drop_duplicates(
+                subset=["burn_block_height"], keep="last"
+            )
             write_parquet(ANCHOR_CACHE_PATH, combined)
             existing = combined
 
@@ -333,4 +366,28 @@ def fetch_tx_by_block_height(
             force_refresh=force_refresh,
         )
     )
+
+
 ANCHOR_CACHE_PATH = HIRO_CACHE_DIR / "anchor_metadata.parquet"
+
+
+def fetch_address_balances(
+    address: str, *, force_refresh: bool = False, ttl_seconds: int = 6 * 3600
+) -> Dict[str, Any]:
+    """Fetch current balances for a principal address (cached).
+
+    Uses Hiro extended balances endpoint. Response typically includes an "stx"
+    object with "balance" (microSTX). We cache responses for a few hours to
+    avoid hammering the API when classifying many wallets.
+    """
+    url = f"{ADDRESS_BALANCES_ENDPOINT}/{address}/balances"
+    return cached_json_request(
+        RequestOptions(
+            prefix="hiro_address_balances",
+            session=_hiro_session(),
+            method="GET",
+            url=url,
+            ttl_seconds=ttl_seconds,
+            force_refresh=force_refresh,
+        )
+    )

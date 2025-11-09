@@ -91,14 +91,20 @@ def _retry_condition(exc: Exception) -> bool:
 
 
 def _request_once(opts: RequestOptions) -> Any:
-    response = opts.session.request(
-        opts.method,
-        opts.url,
-        params=opts.params,
-        json=opts.json_body,
-        headers=opts.headers,
-        timeout=30,
-    )
+    try:
+        response = opts.session.request(
+            opts.method,
+            opts.url,
+            params=opts.params,
+            json=opts.json_body,
+            headers=opts.headers,
+            timeout=(
+                10,
+                120,
+            ),  # (connect_timeout, read_timeout) - 10s to connect, 120s max for response
+        )
+    except requests.RequestException as exc:
+        raise TransientHTTPError(f"Request failed: {exc}") from exc
     if _should_retry(response.status_code):
         raise TransientHTTPError(f"Status {response.status_code} for {opts.url}")
     response.raise_for_status()

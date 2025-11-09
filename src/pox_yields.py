@@ -37,7 +37,9 @@ def _pox_cycles_cache_path() -> Path:
     return POX_YIELDS_CACHE_DIR / "pox_cycles_with_rewards.parquet"
 
 
-def _aggregate_rewards_by_cycle_cache_path(start_cycle: int | None, end_cycle: int | None) -> Path:
+def _aggregate_rewards_by_cycle_cache_path(
+    start_cycle: int | None, end_cycle: int | None
+) -> Path:
     """Cache path for aggregated rewards by cycle."""
     label = "all"
     if start_cycle is not None or end_cycle is not None:
@@ -82,10 +84,10 @@ def calculate_apy_btc(
         return 0.0
 
     apy = (
-        (total_btc_sats / total_stacked_ustx) *
-        (const.DAYS_PER_YEAR / pox_cycle_days) *
-        100 *
-        const.USTX_PER_STX  # Convert microSTX to STX
+        (total_btc_sats / total_stacked_ustx)
+        * (const.DAYS_PER_YEAR / pox_cycle_days)
+        * 100
+        * const.USTX_PER_STX  # Convert microSTX to STX
     )
 
     return round(apy, 2)
@@ -120,19 +122,25 @@ def fetch_pox_cycles_data(*, force_refresh: bool = False) -> pd.DataFrame:
     cycles_df = list_pox_cycles(force_refresh=force_refresh)
 
     if cycles_df.empty:
-        return pd.DataFrame(columns=[
-            "cycle_number",
-            "block_height",
-            "total_weight",
-            "total_stacked_amount",
-            "total_signers"
-        ])
+        return pd.DataFrame(
+            columns=[
+                "cycle_number",
+                "block_height",
+                "total_weight",
+                "total_stacked_amount",
+                "total_signers",
+            ]
+        )
 
     # Ensure numeric types
     if "total_stacked_amount" in cycles_df.columns:
-        cycles_df["total_stacked_amount"] = pd.to_numeric(cycles_df["total_stacked_amount"], errors="coerce")
+        cycles_df["total_stacked_amount"] = pd.to_numeric(
+            cycles_df["total_stacked_amount"], errors="coerce"
+        )
     if "cycle_number" in cycles_df.columns:
-        cycles_df["cycle_number"] = pd.to_numeric(cycles_df["cycle_number"], errors="coerce")
+        cycles_df["cycle_number"] = pd.to_numeric(
+            cycles_df["cycle_number"], errors="coerce"
+        )
 
     # Sort by cycle number descending (most recent first)
     cycles_df = cycles_df.sort_values("cycle_number", ascending=False)
@@ -177,27 +185,33 @@ def aggregate_rewards_by_cycle(
     cycles_df = fetch_pox_cycles_data(force_refresh=force_refresh)
 
     if cycles_df.empty:
-        return pd.DataFrame(columns=[
-            "cycle_number",
-            "total_btc_sats",
-            "total_blocks",
-            "avg_btc_per_block_sats"
-        ])
+        return pd.DataFrame(
+            columns=[
+                "cycle_number",
+                "total_btc_sats",
+                "total_blocks",
+                "avg_btc_per_block_sats",
+            ]
+        )
 
     # Filter cycles if requested
     filtered_cycles = cycles_df.copy()
     if start_cycle is not None:
-        filtered_cycles = filtered_cycles[filtered_cycles["cycle_number"] >= start_cycle]
+        filtered_cycles = filtered_cycles[
+            filtered_cycles["cycle_number"] >= start_cycle
+        ]
     if end_cycle is not None:
         filtered_cycles = filtered_cycles[filtered_cycles["cycle_number"] <= end_cycle]
 
     if filtered_cycles.empty:
-        return pd.DataFrame(columns=[
-            "cycle_number",
-            "total_btc_sats",
-            "total_blocks",
-            "avg_btc_per_block_sats"
-        ])
+        return pd.DataFrame(
+            columns=[
+                "cycle_number",
+                "total_btc_sats",
+                "total_blocks",
+                "avg_btc_per_block_sats",
+            ]
+        )
 
     # Determine burn block height range
     # Note: Each cycle has block_height (start) but we need end too
@@ -207,12 +221,14 @@ def aggregate_rewards_by_cycle(
     rewards_df = aggregate_rewards_by_burn_block(force_refresh=force_refresh)
 
     if rewards_df.empty:
-        return pd.DataFrame(columns=[
-            "cycle_number",
-            "total_btc_sats",
-            "total_blocks",
-            "avg_btc_per_block_sats"
-        ])
+        return pd.DataFrame(
+            columns=[
+                "cycle_number",
+                "total_btc_sats",
+                "total_blocks",
+                "avg_btc_per_block_sats",
+            ]
+        )
 
     # Map burn block heights to PoX cycles
     rewards_with_cycle = cycle_utils.map_burn_heights_to_cycles(
@@ -220,15 +236,19 @@ def aggregate_rewards_by_cycle(
     )
 
     # Aggregate by cycle
-    cycle_rewards = rewards_with_cycle.dropna(subset=["cycle_number"]).groupby("cycle_number").agg({
-        "reward_amount_sats_sum": "sum",
-        "burn_block_height": "count"
-    }).reset_index()
+    cycle_rewards = (
+        rewards_with_cycle.dropna(subset=["cycle_number"])
+        .groupby("cycle_number")
+        .agg({"reward_amount_sats_sum": "sum", "burn_block_height": "count"})
+        .reset_index()
+    )
 
-    cycle_rewards = cycle_rewards.rename(columns={
-        "reward_amount_sats_sum": "total_btc_sats",
-        "burn_block_height": "total_blocks"
-    })
+    cycle_rewards = cycle_rewards.rename(
+        columns={
+            "reward_amount_sats_sum": "total_btc_sats",
+            "burn_block_height": "total_blocks",
+        }
+    )
 
     # Calculate average BTC per block
     cycle_rewards["avg_btc_per_block_sats"] = (
@@ -283,14 +303,16 @@ def calculate_cycle_apy(
     merged = cycles_df.merge(rewards_df, on="cycle_number", how="inner")
 
     if merged.empty:
-        return pd.DataFrame(columns=[
-            "cycle_number",
-            "total_stacked_ustx",
-            "total_btc_sats",
-            "participation_rate_pct",
-            "apy_btc",
-            "apy_usd"
-        ])
+        return pd.DataFrame(
+            columns=[
+                "cycle_number",
+                "total_stacked_ustx",
+                "total_btc_sats",
+                "participation_rate_pct",
+                "apy_btc",
+                "apy_usd",
+            ]
+        )
 
     # Calculate participation rate
     merged["participation_rate_pct"] = calculate_participation_rate(
@@ -301,18 +323,21 @@ def calculate_cycle_apy(
     # Note: total_stacked_amount is in microSTX
     merged["apy_btc"] = merged.apply(
         lambda row: calculate_apy_btc(
-            row["total_btc_sats"],
-            row["total_stacked_amount"]
+            row["total_btc_sats"], row["total_stacked_amount"]
         ),
-        axis=1
+        axis=1,
     )
 
     # If prices provided, calculate USD APY
-    if prices_df is not None and "stx_usd_avg" in prices_df.columns and "btc_usd_avg" in prices_df.columns:
+    if (
+        prices_df is not None
+        and "stx_usd_avg" in prices_df.columns
+        and "btc_usd_avg" in prices_df.columns
+    ):
         merged = merged.merge(
             prices_df[["cycle_number", "stx_usd_avg", "btc_usd_avg"]],
             on="cycle_number",
-            how="left"
+            how="left",
         )
 
         # USD APY = BTC APY * (BTC price / STX price)
@@ -323,9 +348,7 @@ def calculate_cycle_apy(
         merged["apy_usd"] = None
 
     # Rename for clarity
-    result = merged.rename(columns={
-        "total_stacked_amount": "total_stacked_ustx"
-    })
+    result = merged.rename(columns={"total_stacked_amount": "total_stacked_ustx"})
 
     # Select and order columns
     output_cols = [
@@ -333,7 +356,7 @@ def calculate_cycle_apy(
         "total_stacked_ustx",
         "total_btc_sats",
         "participation_rate_pct",
-        "apy_btc"
+        "apy_btc",
     ]
     if "apy_usd" in result.columns and result["apy_usd"].notna().any():
         output_cols.append("apy_usd")

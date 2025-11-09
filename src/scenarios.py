@@ -17,7 +17,9 @@ class ScenarioConfig:
     rho_candidates: Sequence[float] = (0.92, const.DEFAULT_COMMITMENT_RATIO, 1.10)
     coinbase_stx: float = const.DEFAULT_COINBASE_STX
     reward_cycles_blocks: int = const.POX_CYCLE_BLOCKS
-    stacked_supply_stx: float = 1_350_000_000.0  # placeholder, will be overwritten at runtime
+    stacked_supply_stx: float = (
+        1_350_000_000.0  # placeholder, will be overwritten at runtime
+    )
 
 
 def summarize_miner_rewards(
@@ -32,8 +34,12 @@ def summarize_miner_rewards(
     cycle_blocks: int | None = None,
 ) -> dict[str, float | None]:
     """Summarise miner BTC commitments and stacker yields for a given reward setup."""
-    coinbase_value = coinbase_stx if coinbase_stx is not None else const.DEFAULT_COINBASE_STX
-    blocks_per_cycle = cycle_blocks if cycle_blocks is not None else const.POX_CYCLE_BLOCKS
+    coinbase_value = (
+        coinbase_stx if coinbase_stx is not None else const.DEFAULT_COINBASE_STX
+    )
+    blocks_per_cycle = (
+        cycle_blocks if cycle_blocks is not None else const.POX_CYCLE_BLOCKS
+    )
 
     reward_stx_total = coinbase_value + fees_stx
     reward_value_btc = reward_stx_total * stx_btc_price
@@ -148,7 +154,9 @@ def build_replacement_roadmap(
         - new_total_revenue: Total miner revenue after change
         - pct_to_coinbase_replacement: % progress toward replacing coinbase
     """
-    baseline_fee_per_tx = baseline_fees_stx / baseline_tx_count if baseline_tx_count else 0.0
+    baseline_fee_per_tx = (
+        baseline_fees_stx / baseline_tx_count if baseline_tx_count else 0.0
+    )
     baseline_total_revenue = coinbase_stx + baseline_fees_stx
 
     records = []
@@ -158,7 +166,9 @@ def build_replacement_roadmap(
         pct_to_replacement = (target_increase / coinbase_stx) * 100
 
         # Strategy A: Fee multiplier only (constant tx count)
-        fee_multiplier = new_fees_needed / baseline_fees_stx if baseline_fees_stx else 0.0
+        fee_multiplier = (
+            new_fees_needed / baseline_fees_stx if baseline_fees_stx else 0.0
+        )
         new_fee_per_tx_a = baseline_fee_per_tx * fee_multiplier
 
         records.append(
@@ -175,7 +185,9 @@ def build_replacement_roadmap(
         )
 
         # Strategy B: Transaction volume only (constant fee/tx)
-        additional_txs = target_increase / baseline_fee_per_tx if baseline_fee_per_tx else 0.0
+        additional_txs = (
+            target_increase / baseline_fee_per_tx if baseline_fee_per_tx else 0.0
+        )
         new_tx_count = baseline_tx_count + additional_txs
 
         records.append(
@@ -243,12 +255,18 @@ def build_yield_sensitivity_scenarios(
         ... )
     """
     # Input validation
-    if not (const.MIN_PARTICIPATION_RATE_PCT <= baseline_participation_rate <= const.MAX_PARTICIPATION_RATE_PCT):
+    if not (
+        const.MIN_PARTICIPATION_RATE_PCT
+        <= baseline_participation_rate
+        <= const.MAX_PARTICIPATION_RATE_PCT
+    ):
         raise ValueError(
             f"baseline_participation_rate must be in [0, 100], got {baseline_participation_rate}"
         )
     if baseline_apy_btc < 0:
-        raise ValueError(f"baseline_apy_btc must be non-negative, got {baseline_apy_btc}")
+        raise ValueError(
+            f"baseline_apy_btc must be non-negative, got {baseline_apy_btc}"
+        )
     if baseline_total_stacked_ustx <= 0:
         raise ValueError(
             f"baseline_total_stacked_ustx must be positive, got {baseline_total_stacked_ustx}"
@@ -266,7 +284,7 @@ def build_yield_sensitivity_scenarios(
         new_participation_rate = baseline_participation_rate + participation_delta
         new_participation_rate = max(
             const.MIN_PARTICIPATION_RATE_PCT,
-            min(const.MAX_PARTICIPATION_RATE_PCT, new_participation_rate)
+            min(const.MAX_PARTICIPATION_RATE_PCT, new_participation_rate),
         )
 
         # Calculate new stacked amount based on participation rate
@@ -280,7 +298,9 @@ def build_yield_sensitivity_scenarios(
 
             # Calculate new APY using centralized helper
             new_apy_btc = calculate_apy_btc(
-                new_total_btc_sats, new_total_stacked_ustx, pox_cycle_days=pox_cycle_days
+                new_total_btc_sats,
+                new_total_stacked_ustx,
+                pox_cycle_days=pox_cycle_days,
             )
 
             apy_delta = new_apy_btc - baseline_apy_btc
@@ -374,7 +394,12 @@ def calculate_competitive_thresholds(
     # total_stx_stacked_ustx = (total_btc_sats * (365 / cycle_days) * 100 * 1_000_000) / APY
 
     max_stacked_ustx = (
-        (current_total_btc_sats * (const.DAYS_PER_YEAR / pox_cycle_days) * 100 * const.USTX_PER_STX)
+        (
+            current_total_btc_sats
+            * (const.DAYS_PER_YEAR / pox_cycle_days)
+            * 100
+            * const.USTX_PER_STX
+        )
         / target_apy_btc
         if target_apy_btc > 0
         else 0
@@ -401,7 +426,8 @@ def calculate_competitive_thresholds(
     achievable_btc = btc_increase_pct < const.BTC_INCREASE_ACHIEVABLE_THRESHOLD_PCT
     achievable_participation = (
         max_participation_rate_pct > 0
-        and participation_decrease_pct > const.PARTICIPATION_DECREASE_ACHIEVABLE_THRESHOLD_PCT
+        and participation_decrease_pct
+        > const.PARTICIPATION_DECREASE_ACHIEVABLE_THRESHOLD_PCT
     )
 
     if achievable_btc and achievable_participation:
@@ -485,9 +511,13 @@ def build_sustainability_scenarios(
     """
     # Input validation
     if baseline_fees_stx < 0:
-        raise ValueError(f"baseline_fees_stx must be non-negative, got {baseline_fees_stx}")
+        raise ValueError(
+            f"baseline_fees_stx must be non-negative, got {baseline_fees_stx}"
+        )
     if baseline_tx_count < 0:
-        raise ValueError(f"baseline_tx_count must be non-negative, got {baseline_tx_count}")
+        raise ValueError(
+            f"baseline_tx_count must be non-negative, got {baseline_tx_count}"
+        )
     if baseline_total_stacked_ustx <= 0:
         raise ValueError(
             f"baseline_total_stacked_ustx must be positive, got {baseline_total_stacked_ustx}"
@@ -497,7 +527,9 @@ def build_sustainability_scenarios(
     if pox_cycle_days <= 0:
         raise ValueError(f"pox_cycle_days must be positive, got {pox_cycle_days}")
     if not (const.MIN_RHO <= rho <= const.MAX_RHO):
-        raise ValueError(f"rho must be in [{const.MIN_RHO}, {const.MAX_RHO}], got {rho}")
+        raise ValueError(
+            f"rho must be in [{const.MIN_RHO}, {const.MAX_RHO}], got {rho}"
+        )
 
     baseline_fee_per_tx = (
         baseline_fees_stx / baseline_tx_count if baseline_tx_count > 0 else 0.0
@@ -528,7 +560,7 @@ def build_sustainability_scenarios(
                 projected_apy_btc = calculate_apy_btc(
                     int(projected_btc_per_cycle),
                     int(baseline_total_stacked_ustx),
-                    pox_cycle_days=pox_cycle_days
+                    pox_cycle_days=pox_cycle_days,
                 )
 
                 apy_delta_from_baseline = projected_apy_btc - baseline_apy_btc

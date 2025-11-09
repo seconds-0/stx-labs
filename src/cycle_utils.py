@@ -65,9 +65,8 @@ def map_burn_heights_to_cycles(
             end_height = max_height + 1_000_000
 
         # Create mask for rows in this cycle's height range [start_height, end_height)
-        mask = (
-            (result[height_column] >= start_height) &
-            (result[height_column] < end_height)
+        mask = (result[height_column] >= start_height) & (
+            result[height_column] < end_height
         )
 
         # Assign cycle_number to matching rows

@@ -63,7 +63,9 @@ def build_tenure_panel(
     )
     panel = panel.rename(columns={"ts": "price_ts"})
 
-    panel["reward_value_sats"] = (panel["reward_stx_total"] * panel["stx_btc"] * 1e8).fillna(0.0)
+    panel["reward_value_sats"] = (
+        panel["reward_stx_total"] * panel["stx_btc"] * 1e8
+    ).fillna(0.0)
     denominator = panel["reward_value_sats"].replace({0: pd.NA})
     panel["rho"] = panel["reward_amount_sats_sum"] / denominator
     panel["rho"] = panel["rho"].clip(cfg.rho_clip_min, cfg.rho_clip_max)
@@ -72,7 +74,9 @@ def build_tenure_panel(
     panel["rho_flag_missing"] = panel["reward_amount_sats_sum"].isna()
     panel.loc[panel["rho_flag_missing"], "rho"] = pd.NA
     panel["rho"] = panel["rho"].astype("Float64")
-    panel["coinbase_flag"] = (panel["coinbase_estimate"] - cfg.coinbase_stx).abs() > 1e-6
+    panel["coinbase_flag"] = (
+        panel["coinbase_estimate"] - cfg.coinbase_stx
+    ).abs() > 1e-6
     return panel
 
 
@@ -160,16 +164,18 @@ def annotate_panel_with_yields(
 
     # Merge yield metrics onto panel
     panel = panel.merge(
-        apy_df[[
-            "cycle_number",
-            "apy_btc",
-            "apy_usd",
-            "participation_rate_pct",
-            "total_stacked_ustx",
-            "total_btc_sats"
-        ]],
+        apy_df[
+            [
+                "cycle_number",
+                "apy_btc",
+                "apy_usd",
+                "participation_rate_pct",
+                "total_stacked_ustx",
+                "total_btc_sats",
+            ]
+        ],
         on="cycle_number",
-        how="left"
+        how="left",
     )
 
     return panel

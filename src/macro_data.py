@@ -208,13 +208,17 @@ def _coingecko_supply_frame(
     market_caps = pd.DataFrame(
         payload.get("market_caps", []), columns=["timestamp_ms", "market_cap_usd"]
     )
-    prices = pd.DataFrame(payload.get("prices", []), columns=["timestamp_ms", "price_usd"])
+    prices = pd.DataFrame(
+        payload.get("prices", []), columns=["timestamp_ms", "price_usd"]
+    )
 
     if market_caps.empty or prices.empty:
         return pd.DataFrame(columns=["date", column_name])
 
     frame = market_caps.merge(prices, on="timestamp_ms", how="inner")
-    frame[column_name] = frame["market_cap_usd"] / frame["price_usd"].replace({0: pd.NA})
+    frame[column_name] = frame["market_cap_usd"] / frame["price_usd"].replace(
+        {0: pd.NA}
+    )
     frame = frame.dropna(subset=[column_name])
     frame["date"] = pd.to_datetime(frame["timestamp_ms"], unit="ms").dt.date
     daily = (

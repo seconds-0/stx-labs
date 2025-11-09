@@ -37,9 +37,7 @@ def test_calculate_yield_advantage():
     """Test yield advantage calculation."""
     # PoX at 12% vs wBTC Aave median at 1.5% = +10.5pp advantage
     advantage = competitiveness.calculate_yield_advantage(
-        pox_apy=12.0,
-        alternative_product=YieldProduct.WBTC_AAVE,
-        use_median=True
+        pox_apy=12.0, alternative_product=YieldProduct.WBTC_AAVE, use_median=True
     )
 
     assert advantage > 0  # PoX should have positive advantage
@@ -49,9 +47,7 @@ def test_calculate_yield_advantage():
 def test_calculate_yield_advantage_ratio():
     """Test yield ratio calculation."""
     ratio = competitiveness.calculate_yield_advantage_ratio(
-        pox_apy=12.0,
-        alternative_product=YieldProduct.WBTC_AAVE,
-        use_median=True
+        pox_apy=12.0, alternative_product=YieldProduct.WBTC_AAVE, use_median=True
     )
 
     assert ratio > 1.0  # PoX should yield more
@@ -62,8 +58,7 @@ def test_calculate_volatility_ratio():
     """Test volatility ratio calculation."""
     # PoX std ~4.5%, wBTC Aave std ~1.0%
     vol_ratio = competitiveness.calculate_volatility_ratio(
-        pox_apy_std=4.5,
-        alternative_product=YieldProduct.WBTC_AAVE
+        pox_apy_std=4.5, alternative_product=YieldProduct.WBTC_AAVE
     )
 
     assert vol_ratio > 1.0  # PoX should be more volatile
@@ -79,16 +74,14 @@ def test_calculate_sharpe_ratio():
 
     # Edge case: zero volatility
     sharpe_zero_vol = competitiveness.calculate_sharpe_ratio(mean_apy=5.0, std_apy=0.0)
-    assert sharpe_zero_vol == float('inf')
+    assert sharpe_zero_vol == float("inf")
 
 
 def test_calculate_risk_adjusted_advantage():
     """Test risk-adjusted yield advantage."""
     # PoX at 12% with 4.5% std vs wBTC Aave
     risk_adj_adv = competitiveness.calculate_risk_adjusted_advantage(
-        pox_apy=12.0,
-        pox_apy_std=4.5,
-        alternative_product=YieldProduct.WBTC_AAVE
+        pox_apy=12.0, pox_apy_std=4.5, alternative_product=YieldProduct.WBTC_AAVE
     )
 
     # PoX Sharpe should be higher despite volatility
@@ -101,7 +94,7 @@ def test_calculate_risk_score():
     score_low = competitiveness.calculate_risk_score(
         technical_risk=RiskLevel.LOW,
         counterparty_risk=RiskLevel.LOW,
-        regulatory_risk=RiskLevel.LOW
+        regulatory_risk=RiskLevel.LOW,
     )
     assert score_low == 1.0
 
@@ -109,7 +102,7 @@ def test_calculate_risk_score():
     score_high = competitiveness.calculate_risk_score(
         technical_risk=RiskLevel.VERY_HIGH,
         counterparty_risk=RiskLevel.VERY_HIGH,
-        regulatory_risk=RiskLevel.VERY_HIGH
+        regulatory_risk=RiskLevel.VERY_HIGH,
     )
     assert score_high == 4.0
 
@@ -117,7 +110,7 @@ def test_calculate_risk_score():
     score_mixed = competitiveness.calculate_risk_score(
         technical_risk=RiskLevel.MEDIUM,
         counterparty_risk=RiskLevel.LOW,
-        regulatory_risk=RiskLevel.MEDIUM
+        regulatory_risk=RiskLevel.MEDIUM,
     )
     assert 1.0 < score_mixed < 4.0
 
@@ -137,10 +130,7 @@ def test_get_product_risk_score():
 
 def test_compare_yields_across_products():
     """Test comparison across all alternative products."""
-    df = competitiveness.compare_yields_across_products(
-        pox_apy=12.0,
-        pox_apy_std=4.5
-    )
+    df = competitiveness.compare_yields_across_products(pox_apy=12.0, pox_apy_std=4.5)
 
     assert isinstance(df, pd.DataFrame)
     assert len(df) > 0  # Should have multiple alternatives
@@ -169,8 +159,7 @@ def test_calculate_equilibrium_yield():
     """Test equilibrium yield calculation."""
     # wBTC Aave median + 2% risk premium
     equilibrium = competitiveness.calculate_equilibrium_yield(
-        alternative_product=YieldProduct.WBTC_AAVE,
-        risk_premium=2.0
+        alternative_product=YieldProduct.WBTC_AAVE, risk_premium=2.0
     )
 
     assert equilibrium > 0
@@ -182,8 +171,7 @@ def test_calculate_equilibrium_yield():
 def test_get_competitive_positioning():
     """Test comprehensive competitive positioning summary."""
     positioning = competitiveness.get_competitive_positioning(
-        pox_apy=12.0,
-        pox_apy_std=4.5
+        pox_apy=12.0, pox_apy_std=4.5
     )
 
     assert isinstance(positioning, dict)
@@ -223,8 +211,7 @@ def test_yield_advantage_with_unknown_product():
 
         # Monkeypatch to inject unknown product temporarily
         competitiveness.calculate_yield_advantage(
-            pox_apy=12.0,
-            alternative_product=None  # type: ignore
+            pox_apy=12.0, alternative_product=None  # type: ignore
         )
 
 
@@ -248,10 +235,7 @@ def test_benchmark_yields_consistency():
 
 def test_compare_yields_excludes_pox():
     """Test that compare_yields_across_products doesn't compare PoX to itself."""
-    df = competitiveness.compare_yields_across_products(
-        pox_apy=12.0,
-        pox_apy_std=4.5
-    )
+    df = competitiveness.compare_yields_across_products(pox_apy=12.0, pox_apy_std=4.5)
 
     # PoX should not appear in the comparison results
     assert "PoX Stacking" not in df["product"].values
@@ -261,9 +245,7 @@ def test_sharpe_ratio_with_risk_free_rate():
     """Test Sharpe ratio calculation with non-zero risk-free rate."""
     # Mean 10%, std 5%, risk-free 2% -> Sharpe = (10-2)/5 = 1.6
     sharpe = competitiveness.calculate_sharpe_ratio(
-        mean_apy=10.0,
-        std_apy=5.0,
-        risk_free_rate=2.0
+        mean_apy=10.0, std_apy=5.0, risk_free_rate=2.0
     )
 
     assert sharpe == 1.6
@@ -272,15 +254,11 @@ def test_sharpe_ratio_with_risk_free_rate():
 def test_yield_advantage_with_mean():
     """Test yield advantage using mean instead of median."""
     advantage_median = competitiveness.calculate_yield_advantage(
-        pox_apy=12.0,
-        alternative_product=YieldProduct.WBTC_AAVE,
-        use_median=True
+        pox_apy=12.0, alternative_product=YieldProduct.WBTC_AAVE, use_median=True
     )
 
     advantage_mean = competitiveness.calculate_yield_advantage(
-        pox_apy=12.0,
-        alternative_product=YieldProduct.WBTC_AAVE,
-        use_median=False
+        pox_apy=12.0, alternative_product=YieldProduct.WBTC_AAVE, use_median=False
     )
 
     # Both should be positive, but may differ
@@ -292,21 +270,21 @@ def test_competitive_positioning_at_different_apy_levels():
     """Test competitive positioning changes based on PoX APY."""
     # Low PoX APY
     positioning_low = competitiveness.get_competitive_positioning(
-        pox_apy=3.0,
-        pox_apy_std=2.0
+        pox_apy=3.0, pox_apy_std=2.0
     )
 
     # High PoX APY
     positioning_high = competitiveness.get_competitive_positioning(
-        pox_apy=20.0,
-        pox_apy_std=5.0
+        pox_apy=20.0, pox_apy_std=5.0
     )
 
     # High APY should have better competitive rank or equal rank #1
     assert positioning_high["competitive_rank"] <= positioning_low["competitive_rank"]
 
     # High APY should have higher average advantage
-    assert positioning_high["avg_yield_advantage"] > positioning_low["avg_yield_advantage"]
+    assert (
+        positioning_high["avg_yield_advantage"] > positioning_low["avg_yield_advantage"]
+    )
 
 
 def test_risk_score_weights():
@@ -316,7 +294,7 @@ def test_risk_score_weights():
         technical_risk=RiskLevel.VERY_HIGH,
         counterparty_risk=RiskLevel.LOW,
         regulatory_risk=RiskLevel.LOW,
-        weights=(1.0, 0.0, 0.0)
+        weights=(1.0, 0.0, 0.0),
     )
 
     # Should be ~4.0 (only technical risk matters)
@@ -327,7 +305,7 @@ def test_risk_score_weights():
         technical_risk=RiskLevel.LOW,
         counterparty_risk=RiskLevel.VERY_HIGH,
         regulatory_risk=RiskLevel.LOW,
-        weights=(0.0, 1.0, 0.0)
+        weights=(0.0, 1.0, 0.0),
     )
 
     assert score_counter_weighted == 4.0

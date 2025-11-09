@@ -158,7 +158,12 @@ def test_calculate_competitive_thresholds_basic():
     assert result["target_apy_btc"] == 15.0
 
     # Feasibility should be a valid category
-    assert result["feasibility"] in ["achievable_btc", "achievable_participation", "both", "challenging"]
+    assert result["feasibility"] in [
+        "achievable_btc",
+        "achievable_participation",
+        "both",
+        "challenging",
+    ]
 
 
 def test_calculate_competitive_thresholds_btc_increase():
@@ -195,7 +200,10 @@ def test_calculate_competitive_thresholds_participation_decrease():
     )
 
     # Higher target APY means less stackers can participate (to keep APY high)
-    assert high_target["max_participation_rate_pct"] < low_target["max_participation_rate_pct"]
+    assert (
+        high_target["max_participation_rate_pct"]
+        < low_target["max_participation_rate_pct"]
+    )
 
 
 def test_calculate_competitive_thresholds_feasibility_achievable_btc():
@@ -273,7 +281,7 @@ def test_build_sustainability_scenarios_fee_growth():
         baseline_apy_btc=12.0,
         baseline_total_stacked_ustx=1_035_000_000_000_000,
         fee_growth_rates=[0.10],  # 10% annual fee growth
-        tx_growth_rates=[0.0],    # Constant tx volume
+        tx_growth_rates=[0.0],  # Constant tx volume
         years_forward=5,
     )
 
@@ -293,8 +301,8 @@ def test_build_sustainability_scenarios_tx_growth():
         baseline_tx_count=625.0,
         baseline_apy_btc=12.0,
         baseline_total_stacked_ustx=1_035_000_000_000_000,
-        fee_growth_rates=[0.0],   # Constant fees/tx
-        tx_growth_rates=[0.25],   # 25% annual tx growth
+        fee_growth_rates=[0.0],  # Constant fees/tx
+        tx_growth_rates=[0.25],  # 25% annual tx growth
         years_forward=5,
     )
 
@@ -327,7 +335,7 @@ def test_build_sustainability_scenarios_compound_growth():
 
     baseline_fees = 50.0
     expected_year1_fees = baseline_fees * 1.10 * 1.25
-    expected_year2_fees = baseline_fees * (1.10 ** 2) * (1.25 ** 2)
+    expected_year2_fees = baseline_fees * (1.10**2) * (1.25**2)
 
     assert abs(year1["projected_fees_stx"] - expected_year1_fees) < 1.0
     assert abs(year2["projected_fees_stx"] - expected_year2_fees) < 1.0
@@ -401,4 +409,6 @@ def test_build_sustainability_scenarios_different_rho_values():
         low_year = low_rho[low_rho["year"] == year].iloc[0]
         high_year = high_rho[high_rho["year"] == year].iloc[0]
 
-        assert high_year["projected_btc_per_cycle"] > low_year["projected_btc_per_cycle"]
+        assert (
+            high_year["projected_btc_per_cycle"] > low_year["projected_btc_per_cycle"]
+        )

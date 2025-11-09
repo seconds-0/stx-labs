@@ -37,7 +37,9 @@ def test_default_rho_matches_observed_median():
         pytest.skip("No valid rho observations available")
 
     observed_median = valid_rho[valid_rho > 0].median()
-    pct_diff = abs(observed_median - const.DEFAULT_COMMITMENT_RATIO) / observed_median * 100
+    pct_diff = (
+        abs(observed_median - const.DEFAULT_COMMITMENT_RATIO) / observed_median * 100
+    )
     assert pct_diff <= 15, (
         f"DEFAULT_COMMITMENT_RATIO {const.DEFAULT_COMMITMENT_RATIO} "
         f"differs {pct_diff:.1f}% from observed median {observed_median:.3f}"
@@ -52,4 +54,6 @@ def test_rewards_cover_panel_range():
     reward_heights = set(rewards["burn_block_height"])
 
     coverage = len(panel_heights & reward_heights) / len(panel_heights)
-    assert coverage >= 0.85, f"Hiro rewards cover only {coverage:.1%} of panel burn heights"
+    assert (
+        coverage >= 0.85
+    ), f"Hiro rewards cover only {coverage:.1%} of panel burn heights"

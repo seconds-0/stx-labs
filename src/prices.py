@@ -21,7 +21,16 @@ COINGECKO_IDS = {
 PRICE_CACHE_DIR = cfg.CACHE_DIR / "prices"
 PRICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-_COINGECKO_SESSION = build_session({"Accept": "application/json", "User-Agent": "stx-labs-notebook/1.0"})
+_COINGECKO_HEADERS = {
+    "Accept": "application/json",
+    "User-Agent": "stx-labs-notebook/1.0",
+}
+_COINGECKO_PARAM_FALLBACK = True
+if cfg.COINGECKO_API_KEY:
+    _COINGECKO_HEADERS["x-cg-pro-api-key"] = cfg.COINGECKO_API_KEY
+    _COINGECKO_PARAM_FALLBACK = False
+
+_COINGECKO_SESSION = build_session(_COINGECKO_HEADERS)
 
 
 def _cache_path(symbol: str) -> Path:
@@ -49,7 +58,9 @@ def _cache_covers(df: pd.DataFrame, start: datetime, end: datetime) -> bool:
     return df["ts"].min() <= start and df["ts"].max() >= end
 
 
-def _fetch_prices_coingecko(symbol: str, start: datetime, end: datetime, *, force_refresh: bool) -> pd.DataFrame:
+def _fetch_prices_coingecko(
+    symbol: str, start: datetime, end: datetime, *, force_refresh: bool
+) -> pd.DataFrame:
     if symbol not in COINGECKO_IDS:
         raise ValueError(f"CoinGecko mapping not defined for {symbol}")
     coin_id, vs_currency = COINGECKO_IDS[symbol]
@@ -65,8 +76,8 @@ def _fetch_prices_coingecko(symbol: str, start: datetime, end: datetime, *, forc
             "from": int(min(cursor.timestamp(), now_ts)),
             "to": min(int(chunk_end.timestamp()), now_ts),
         }
-        # Include API key if available
-        if cfg.COINGECKO_API_KEY:
+        # Demo keys require query param, pro keys use header (set above in _COINGECKO_HEADERS)
+        if _COINGECKO_PARAM_FALLBACK and cfg.COINGECKO_API_KEY:
             params["x_cg_demo_api_key"] = cfg.COINGECKO_API_KEY
         if params["from"] >= params["to"]:
             cursor = chunk_end
@@ -97,7 +108,9 @@ def _fetch_prices_coingecko(symbol: str, start: datetime, end: datetime, *, forc
     )
 
 
-def _fetch_prices_fallback(symbol: str, start: datetime, end: datetime, *, frequency: str, force_refresh: bool) -> pd.DataFrame:
+def _fetch_prices_fallback(
+    symbol: str, start: datetime, end: datetime, *, frequency: str, force_refresh: bool
+) -> pd.DataFrame:
     """Fallback price fetch using Signal21 API."""
     try:
         df = signal21.fetch_price_series(
@@ -115,7 +128,11 @@ def _fetch_prices_fallback(symbol: str, start: datetime, end: datetime, *, frequ
     value_columns = [col for col in df.columns if col != "ts"]
     if not value_columns:
         raise RuntimeError("Signal21 price response missing price column")
-    value_col = "px" if "px" in value_columns else "price" if "price" in value_columns else value_columns[0]
+    value_col = (
+        "px"
+        if "px" in value_columns
+        else "price" if "price" in value_columns else value_columns[0]
+    )
     return df[["ts", value_col]].rename(columns={value_col: "px"})
 
 
@@ -141,7 +158,9 @@ def _ensure_price_series(
         fresh_df = pd.DataFrame()
         coingecko_exc: Exception | None = None
         try:
-            fresh_df = _fetch_prices_coingecko(symbol, start, end, force_refresh=force_refresh)
+            fresh_df = _fetch_prices_coingecko(
+                symbol, start, end, force_refresh=force_refresh
+            )
         except Exception as exc:  # pragma: no cover
             coingecko_exc = exc
             fresh_df = pd.DataFrame()
@@ -229,12 +248,15 @@ def load_price_panel(
     force_refresh: bool = False,
 ) -> pd.DataFrame:
     """Return merged STX-USD, BTC-USD, and STX/BTC hourly data."""
-    stx = fetch_price_series("STX-USD", start, end, frequency=frequency, force_refresh=force_refresh)
-    btc = fetch_price_series("BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh)
+    stx = fetch_price_series(
+        "STX-USD", start, end, frequency=frequency, force_refresh=force_refresh
+    )
+    btc = fetch_price_series(
+        "BTC-USD", start, end, frequency=frequency, force_refresh=force_refresh
+    )
 
-    df = (
-        stx.rename(columns={"px": "stx_usd"})
-        .merge(btc.rename(columns={"px": "btc_usd"}), on="ts", how="outer")
+    df = stx.rename(columns={"px": "stx_usd"}).merge(
+        btc.rename(columns={"px": "btc_usd"}), on="ts", how="outer"
     )
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df = df.set_index("ts").sort_index()
@@ -247,7 +269,7 @@ def load_price_panel(
     if zero_btc_count > 0 or zero_stx_count > 0:
         warnings.warn(
             f"Interpolating {zero_btc_count} zero BTC prices and {zero_stx_count} zero STX prices from API gaps",
-            RuntimeWarning
+            RuntimeWarning,
         )
     df.loc[df["btc_usd"] == 0, "btc_usd"] = pd.NA
     df.loc[df["stx_usd"] == 0, "stx_usd"] = pd.NA

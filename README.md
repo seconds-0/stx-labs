@@ -34,12 +34,20 @@ make notebook-bg      # launch papermill in background, log to out/notebook.log
 make notebook-status  # check on background run PID
 make notebook-tail    # follow the notebook log
 make refresh-prices   # delete cached price parquet files
+
+# Wallet transaction history backfill (for dashboard metrics)
+make backfill-status  # check current backfill progress
+make backfill-wallet  # run backfill (foreground, default 180 days)
+make backfill-bg      # run backfill in background with logging
+make backfill-tail    # follow backfill logs
+make backfill-stop    # stop background backfill process
 ```
 
 ## Documentation
 - `docs/reset-plan.md` – high-level roadmap for stabilization.
 - `docs/local.md` – detailed local workflow (setup, caching, papermill).
 - `docs/colab.md` – optional hosted workflow if Colab is needed.
+- `docs/BACKFILL.md` – comprehensive guide for wallet transaction history backfill.
 
 ## Contribution Guidelines
 - Use beads (`bd ready`, `bd update`) to track work.

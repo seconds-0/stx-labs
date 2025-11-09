@@ -137,11 +137,17 @@ def _insert_transactions(conn: duckdb.DuckDBPyConnection, frame: pd.DataFrame) -
 
 
 def _page_cursor(results: list[dict[str, Any]]) -> int | None:
-    timestamps = [
-        int(tx["block_time"])
-        for tx in results
-        if "block_time" in tx and tx["block_time"] is not None
-    ]
+    timestamps: list[int] = []
+    for tx in results:
+        cursor_candidate = tx.get("burn_block_time")
+        if cursor_candidate is None:
+            cursor_candidate = tx.get("block_time")
+        if cursor_candidate is None:
+            continue
+        try:
+            timestamps.append(int(cursor_candidate))
+        except (TypeError, ValueError):
+            continue
     if not timestamps:
         return None
     return min(timestamps) - 1
@@ -160,6 +166,7 @@ def _sync_latest_transactions(
     pages = 0
     while pages < max_pages:
         pages += 1
+        print(f"  Fetching latest page {pages}/{max_pages}...", flush=True)
         payload = fetch_transactions_page(
             limit=TRANSACTION_PAGE_LIMIT,
             offset=0,
@@ -192,21 +199,28 @@ def _sync_historical_transactions(
     cutoff: datetime,
     max_pages: int,
 ) -> None:
-    min_row = conn.execute("SELECT MIN(block_time) FROM transactions").fetchone()
+    min_row = conn.execute(
+        "SELECT MIN(block_time), MIN(burn_block_time) FROM transactions"
+    ).fetchone()
     target_time = cutoff.astimezone(UTC)
     min_time = (
         pd.Timestamp(min_row[0]).tz_localize("UTC") if min_row and min_row[0] else None
     )
+    min_burn_time = (
+        pd.Timestamp(min_row[1]).tz_localize("UTC") if min_row and min_row[1] else None
+    )
     if min_time is not None and min_time <= target_time:
         return
+    cursor_source = min_burn_time or min_time
     cursor_to = (
-        int(min_time.timestamp()) - 1
-        if min_time is not None
+        int(cursor_source.timestamp()) - 1
+        if cursor_source is not None
         else int(_utc_now().timestamp())
     )
     pages = 0
     while pages < max_pages and cursor_to is not None:
         pages += 1
+        print(f"  Fetching historical page {pages}/{max_pages}...", flush=True)
         payload = fetch_transactions_page(
             limit=TRANSACTION_PAGE_LIMIT,
             offset=0,

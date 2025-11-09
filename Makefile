@@ -1,4 +1,4 @@
-.PHONY: setup lab test notebook smoke-notebook notebook-bg notebook-status notebook-tail notebook-stop refresh-prices notebook-macro notebook-macro-bg lint clean
+.PHONY: setup lab test notebook smoke-notebook notebook-bg notebook-status notebook-tail notebook-stop refresh-prices notebook-macro notebook-macro-bg lint clean backfill-wallet backfill-status backfill-bg backfill-stop
 
 VENV?=.venv
 PYTHON?=$(VENV)/bin/python
@@ -84,3 +84,46 @@ notebook-macro-bg:
 
 clean:
 	rm -rf data/raw/* out/*
+
+# Wallet transaction history backfill targets
+BACKFILL_LOG?=out/backfill.log
+BACKFILL_PID?=out/backfill.pid
+TARGET_DAYS?=180
+
+backfill-wallet:
+	$(PYTHON) scripts/backfill_wallet_history.py --target-days $(TARGET_DAYS) --max-pages 2000
+
+backfill-status:
+	@$(PYTHON) scripts/check_backfill_status.py --target-days $(TARGET_DAYS) || true
+
+backfill-bg:
+	@mkdir -p $(dir $(BACKFILL_LOG))
+	@echo "Launching wallet backfill in background; logging to $(BACKFILL_LOG)"
+	( (set -o pipefail; caffeinate -i $(PYTHON) -u scripts/backfill_wallet_history.py --target-days $(TARGET_DAYS) --max-pages 2000) 2>&1 | tee $(BACKFILL_LOG) ) &
+	@printf "%s\n" $$! > $(BACKFILL_PID)
+	@echo "Background PID $$!"
+	@echo "Using caffeinate to prevent sleep during backfill"
+	@echo "Max pages per iteration: 2000 (safer, faster iterations)"
+	@echo "Monitor with: make backfill-tail"
+	@echo "Check status with: make backfill-status"
+
+backfill-tail:
+	@if [ -f $(BACKFILL_LOG) ]; then \
+		echo "Tailing $(BACKFILL_LOG) (Ctrl+C to stop)"; \
+		tail -f $(BACKFILL_LOG); \
+	else \
+		echo "Backfill log not found at $(BACKFILL_LOG)"; \
+	fi
+
+backfill-stop:
+	@if [ -f $(BACKFILL_PID) ]; then \
+		pid=$$(cat $(BACKFILL_PID)); \
+		if ps -p $$pid >/dev/null 2>&1; then \
+			kill $$pid && echo "Stopped backfill (PID $$pid)"; \
+		else \
+			echo "Backfill not running (last PID $$pid)"; \
+		fi; \
+		rm -f $(BACKFILL_PID); \
+	else \
+		echo "No backfill PID file found (expected at $(BACKFILL_PID))"; \
+	fi

@@ -51,7 +51,9 @@ def _load_burn_block_metadata(
     force_refresh: bool = False,
 ) -> Dict[int, Dict[str, int | str]]:
     """Fetch metadata (burn + stacks height/time/hash) for burn heights."""
-    metadata_df = hiro.collect_anchor_metadata(burn_heights, force_refresh=force_refresh)
+    metadata_df = hiro.collect_anchor_metadata(
+        burn_heights, force_refresh=force_refresh
+    )
     if metadata_df.empty:
         return {}
     return {
@@ -78,14 +80,18 @@ def _fetch_cycle_inputs(
         raise RuntimeError("No PoX cycles returned from Hiro API.")
     config_payload = hiro.fetch_pox_config(force_refresh=force_refresh)
     cycle_constants = {
-        "first_burnchain_block_height": int(config_payload["first_burnchain_block_height"]),
+        "first_burnchain_block_height": int(
+            config_payload["first_burnchain_block_height"]
+        ),
         "reward_cycle_length": int(config_payload["reward_cycle_length"]),
         "prepare_phase_block_length": int(config_payload["prepare_phase_block_length"]),
         "reward_phase_block_length": int(config_payload["reward_phase_block_length"]),
     }
     filtered = cycles_df[cycles_df["cycle_number"] >= min_cycle].copy()
     if filtered.empty:
-        raise RuntimeError(f"No cycles at or above {min_cycle} present in Hiro response.")
+        raise RuntimeError(
+            f"No cycles at or above {min_cycle} present in Hiro response."
+        )
     return filtered, cycle_constants
 
 
@@ -95,7 +101,9 @@ def build_cycle_rewards_dataframe(
     force_refresh: bool = False,
 ) -> pd.DataFrame:
     """Assemble PoX cycle reward statistics."""
-    cycles_df, constants = _fetch_cycle_inputs(min_cycle=min_cycle, force_refresh=force_refresh)
+    cycles_df, constants = _fetch_cycle_inputs(
+        min_cycle=min_cycle, force_refresh=force_refresh
+    )
 
     base_burn_height = constants["first_burnchain_block_height"]
     reward_cycle_length = constants["reward_cycle_length"]
@@ -124,11 +132,15 @@ def build_cycle_rewards_dataframe(
         if prev_height > 0:
             required_burn_heights.add(prev_height)
 
-    burn_metadata = _load_burn_block_metadata(required_burn_heights, force_refresh=force_refresh)
+    burn_metadata = _load_burn_block_metadata(
+        required_burn_heights, force_refresh=force_refresh
+    )
 
     records: List[Dict[str, object]] = []
     for row in cycles_df.itertuples():
-        boundary = next(b for b in boundaries if b.cycle_number == int(row.cycle_number))
+        boundary = next(
+            b for b in boundaries if b.cycle_number == int(row.cycle_number)
+        )
         start_meta = burn_metadata.get(boundary.reward_start_burn_height, {})
         end_meta = burn_metadata.get(boundary.reward_end_burn_height, {})
         prev_meta = burn_metadata.get(boundary.reward_start_burn_height - 1, {})
@@ -155,7 +167,9 @@ def build_cycle_rewards_dataframe(
         }
 
         if prev_meta:
-            record["baseline_stacks_block_height"] = prev_meta.get("stacks_block_height")
+            record["baseline_stacks_block_height"] = prev_meta.get(
+                "stacks_block_height"
+            )
         else:
             record["baseline_stacks_block_height"] = None
 

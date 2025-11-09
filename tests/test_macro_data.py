@@ -27,7 +27,9 @@ def temp_cache_dir(tmp_path, monkeypatch):
 
 
 def _build_history(values: list[float]) -> pd.DataFrame:
-    history = pd.DataFrame({"Close": values}, index=pd.date_range("2024-01-01", periods=len(values)))
+    history = pd.DataFrame(
+        {"Close": values}, index=pd.date_range("2024-01-01", periods=len(values))
+    )
     history.index.name = "Date"
     return history
 
@@ -50,7 +52,8 @@ def test_fetch_sp500_uses_cache(temp_cache_dir, monkeypatch):
 
 def test_fetch_unemployment_data(temp_cache_dir):
     mock_df = pd.DataFrame(
-        {"UNRATE": [3.7, 3.8, 3.9]}, index=pd.date_range("2024-01-01", periods=3, freq="MS")
+        {"UNRATE": [3.7, 3.8, 3.9]},
+        index=pd.date_range("2024-01-01", periods=3, freq="MS"),
     )
     mock_df.index.name = "date"
 
@@ -62,9 +65,13 @@ def test_fetch_unemployment_data(temp_cache_dir):
 
 
 def test_fetch_interest_rates(temp_cache_dir):
-    mock_dff = pd.DataFrame({"DFF": [5.25, 5.25]}, index=pd.date_range("2024-01-01", periods=2))
+    mock_dff = pd.DataFrame(
+        {"DFF": [5.25, 5.25]}, index=pd.date_range("2024-01-01", periods=2)
+    )
     mock_dff.index.name = "date"
-    mock_dgs10 = pd.DataFrame({"DGS10": [4.0, 4.05]}, index=pd.date_range("2024-01-01", periods=2))
+    mock_dgs10 = pd.DataFrame(
+        {"DGS10": [4.0, 4.05]}, index=pd.date_range("2024-01-01", periods=2)
+    )
     mock_dgs10.index.name = "date"
 
     with patch("pandas_datareader.data.DataReader", side_effect=[mock_dff, mock_dgs10]):
@@ -131,25 +138,36 @@ def test_fetch_stablecoin_supply_computes_changes(temp_cache_dir, monkeypatch):
 def test_load_macro_panel_merges_all_sources(temp_cache_dir):
     dates = pd.date_range("2024-01-01", periods=3).date
 
-    with patch("src.macro_data.fetch_sp500_data") as mock_sp500, patch(
-        "src.macro_data.fetch_unemployment_data"
-    ) as mock_unemp, patch("src.macro_data.fetch_interest_rates") as mock_rates, patch(
-        "src.macro_data.fetch_volatility_data"
-    ) as mock_vix, patch(
-        "src.macro_data.fetch_stablecoin_supply"
-    ) as mock_stable, patch(
-        "src.macro_data.fetch_additional_indicators"
-    ) as mock_additional:
-        mock_sp500.return_value = pd.DataFrame({"date": dates, "sp500_close": [4500, 4550, 4525]})
+    with (
+        patch("src.macro_data.fetch_sp500_data") as mock_sp500,
+        patch("src.macro_data.fetch_unemployment_data") as mock_unemp,
+        patch("src.macro_data.fetch_interest_rates") as mock_rates,
+        patch("src.macro_data.fetch_volatility_data") as mock_vix,
+        patch("src.macro_data.fetch_stablecoin_supply") as mock_stable,
+        patch("src.macro_data.fetch_additional_indicators") as mock_additional,
+    ):
+        mock_sp500.return_value = pd.DataFrame(
+            {"date": dates, "sp500_close": [4500, 4550, 4525]}
+        )
         mock_unemp.return_value = pd.DataFrame(
             {"date": dates, "unemployment_rate": [3.7, 3.7, 3.8]}
         )
         mock_rates.return_value = pd.DataFrame(
-            {"date": dates, "fed_funds_rate": [5.25, 5.25, 5.25], "treasury_10y": [4.0, 4.0, 4.1]}
+            {
+                "date": dates,
+                "fed_funds_rate": [5.25, 5.25, 5.25],
+                "treasury_10y": [4.0, 4.0, 4.1],
+            }
         )
-        mock_vix.return_value = pd.DataFrame({"date": dates, "vix_close": [13.5, 14.2, 13.8]})
+        mock_vix.return_value = pd.DataFrame(
+            {"date": dates, "vix_close": [13.5, 14.2, 13.8]}
+        )
         mock_stable.return_value = pd.DataFrame(
-            {"date": dates, "usdt_supply": [95e9, 96e9, 96.5e9], "usdc_supply": [24e9, 24.2e9, 24.1e9]}
+            {
+                "date": dates,
+                "usdt_supply": [95e9, 96e9, 96.5e9],
+                "usdc_supply": [24e9, 24.2e9, 24.1e9],
+            }
         )
         mock_additional.return_value = pd.DataFrame(
             {"date": dates, "dxy_close": [102.5, 102.8, 102.3]}

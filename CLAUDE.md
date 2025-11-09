@@ -47,6 +47,28 @@ make refresh-prices  # Delete cached price parquet files
 make clean          # Remove all cached data and outputs (data/raw/, out/)
 ```
 
+### Dashboard Generation
+
+**Quick rebuild (incremental data only):**
+```bash
+python scripts/build_dashboards.py
+```
+- Updates wallet and macro dashboards with recent data only
+- Fast (~30 seconds) but may show incomplete metrics if cache is empty
+
+**Full historical refresh (REQUIRED for initial setup or after cache clear):**
+```bash
+python scripts/build_dashboards.py --force-refresh
+```
+- Fetches **180 days of wallet transaction history** from Hiro API
+- Takes 3-5 minutes
+- Required to get accurate wallet counts beyond recent activity
+- Run this if dashboards show suspiciously low wallet counts (<100)
+
+**Output locations:**
+- Standalone dashboards: `out/dashboards/wallet_dashboard.html`, `out/dashboards/macro_dashboard.html`
+- Deployed site: `public/wallet/index.html`, `public/macro/index.html`, `public/index.html` (landing page)
+
 ## Architecture & Code Structure
 
 ### Module Organization
@@ -70,6 +92,28 @@ notebooks/
 tests/
 └── test_*.py          # Pytest suite mirroring src/ structure
 ```
+
+### Cache Structure
+
+**Wallet Metrics Cache:**
+- **Database**: `data/cache/wallet_metrics.duckdb` (DuckDB database, ~2-50MB when populated)
+  - Table name: `transactions` (NOT `transaction_history`)
+  - Contains raw transaction history from Hiro API
+  - Columns: `tx_id`, `sender_address`, `block_time`, `fee_rate`, etc.
+- **First seen cache**: `data/cache/wallet_metrics/first_seen_wallets.parquet`
+  - Maps each address to its first transaction timestamp
+  - Updated incrementally on each dashboard build
+
+**Other Caches:**
+- **Hiro API responses**: `data/cache/hiro/*.parquet` (rewards, block metadata)
+- **Price data**: `data/cache/prices/*.parquet` (CoinGecko, Signal21)
+- **Signal21 data**: `data/cache/signal21/*.parquet` (fees, SQL query results)
+- **Raw HTTP cache**: `data/raw/*.json` (raw API responses for all providers)
+
+**Important Notes:**
+- Without `--force-refresh`, wallet metrics only syncs recent transactions (incremental)
+- To populate full history, you MUST run with `--force-refresh` flag
+- The DuckDB database exists at `data/cache/wallet_metrics.duckdb` (check with `ls -lh data/cache/`)
 
 ### Data Flow
 

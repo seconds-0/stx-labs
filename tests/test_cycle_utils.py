@@ -8,15 +8,19 @@ from src import cycle_utils
 
 def test_map_burn_heights_to_cycles_basic():
     """Test basic cycle mapping with simple case."""
-    df = pd.DataFrame({
-        "burn_block_height": [100, 150, 200],
-        "value": [1, 2, 3],
-    })
+    df = pd.DataFrame(
+        {
+            "burn_block_height": [100, 150, 200],
+            "value": [1, 2, 3],
+        }
+    )
 
-    cycles = pd.DataFrame({
-        "cycle_number": [1, 2],
-        "block_height": [100, 200],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [1, 2],
+            "block_height": [100, 200],
+        }
+    )
 
     result = cycle_utils.map_burn_heights_to_cycles(df, cycles)
 
@@ -33,10 +37,12 @@ def test_map_burn_heights_to_cycles_basic():
 
 def test_map_burn_heights_to_cycles_empty_cycles():
     """Test handling when no cycles are available."""
-    df = pd.DataFrame({
-        "burn_block_height": [100, 200, 300],
-        "value": [1, 2, 3],
-    })
+    df = pd.DataFrame(
+        {
+            "burn_block_height": [100, 200, 300],
+            "value": [1, 2, 3],
+        }
+    )
 
     # Empty cycles DataFrame
     cycles = pd.DataFrame()
@@ -50,16 +56,20 @@ def test_map_burn_heights_to_cycles_empty_cycles():
 
 def test_map_burn_heights_to_cycles_preserves_data():
     """Test that original columns and data are preserved."""
-    df = pd.DataFrame({
-        "burn_block_height": [100, 200],
-        "value": [1, 2],
-        "name": ["a", "b"],
-    })
+    df = pd.DataFrame(
+        {
+            "burn_block_height": [100, 200],
+            "value": [1, 2],
+            "name": ["a", "b"],
+        }
+    )
 
-    cycles = pd.DataFrame({
-        "cycle_number": [1],
-        "block_height": [100],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [1],
+            "block_height": [100],
+        }
+    )
 
     result = cycle_utils.map_burn_heights_to_cycles(df, cycles)
 
@@ -78,14 +88,18 @@ def test_map_burn_heights_to_cycles_preserves_data():
 
 def test_map_burn_heights_to_cycles_multiple_cycles():
     """Test mapping across multiple cycles."""
-    df = pd.DataFrame({
-        "burn_block_height": [100, 150, 200, 250, 300, 350, 400],
-    })
+    df = pd.DataFrame(
+        {
+            "burn_block_height": [100, 150, 200, 250, 300, 350, 400],
+        }
+    )
 
-    cycles = pd.DataFrame({
-        "cycle_number": [1, 2, 3],
-        "block_height": [100, 200, 300],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [1, 2, 3],
+            "block_height": [100, 200, 300],
+        }
+    )
 
     result = cycle_utils.map_burn_heights_to_cycles(df, cycles)
 
@@ -105,15 +119,19 @@ def test_map_burn_heights_to_cycles_multiple_cycles():
 
 def test_map_burn_heights_to_cycles_custom_height_column():
     """Test using a custom height column name."""
-    df = pd.DataFrame({
-        "custom_height": [100, 200, 300],
-        "value": [1, 2, 3],
-    })
+    df = pd.DataFrame(
+        {
+            "custom_height": [100, 200, 300],
+            "value": [1, 2, 3],
+        }
+    )
 
-    cycles = pd.DataFrame({
-        "cycle_number": [1, 2],
-        "block_height": [100, 250],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [1, 2],
+            "block_height": [100, 250],
+        }
+    )
 
     result = cycle_utils.map_burn_heights_to_cycles(
         df, cycles, height_column="custom_height"
@@ -127,14 +145,18 @@ def test_map_burn_heights_to_cycles_custom_height_column():
 
 def test_map_burn_heights_to_cycles_missing_height_column():
     """Test error handling when height column is missing."""
-    df = pd.DataFrame({
-        "value": [1, 2, 3],
-    })
+    df = pd.DataFrame(
+        {
+            "value": [1, 2, 3],
+        }
+    )
 
-    cycles = pd.DataFrame({
-        "cycle_number": [1],
-        "block_height": [100],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [1],
+            "block_height": [100],
+        }
+    )
 
     with pytest.raises(ValueError, match="missing required column"):
         cycle_utils.map_burn_heights_to_cycles(df, cycles)
@@ -144,10 +166,12 @@ def test_map_burn_heights_to_cycles_empty_dataframe():
     """Test handling when input DataFrame is empty."""
     df = pd.DataFrame(columns=["burn_block_height"])
 
-    cycles = pd.DataFrame({
-        "cycle_number": [1, 2],
-        "block_height": [100, 200],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [1, 2],
+            "block_height": [100, 200],
+        }
+    )
 
     result = cycle_utils.map_burn_heights_to_cycles(df, cycles)
 
@@ -158,14 +182,18 @@ def test_map_burn_heights_to_cycles_empty_dataframe():
 
 def test_map_burn_heights_to_cycles_boundary_heights():
     """Test that cycle boundaries are handled correctly."""
-    df = pd.DataFrame({
-        "burn_block_height": [99, 100, 199, 200, 201],
-    })
+    df = pd.DataFrame(
+        {
+            "burn_block_height": [99, 100, 199, 200, 201],
+        }
+    )
 
-    cycles = pd.DataFrame({
-        "cycle_number": [1, 2],
-        "block_height": [100, 200],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [1, 2],
+            "block_height": [100, 200],
+        }
+    )
 
     result = cycle_utils.map_burn_heights_to_cycles(df, cycles)
 
@@ -187,15 +215,19 @@ def test_map_burn_heights_to_cycles_boundary_heights():
 
 def test_map_burn_heights_to_cycles_unsorted_cycles():
     """Test that cycles DataFrame is sorted internally."""
-    df = pd.DataFrame({
-        "burn_block_height": [150, 250, 350],
-    })
+    df = pd.DataFrame(
+        {
+            "burn_block_height": [150, 250, 350],
+        }
+    )
 
     # Cycles provided in reverse order
-    cycles = pd.DataFrame({
-        "cycle_number": [3, 2, 1],
-        "block_height": [300, 200, 100],
-    })
+    cycles = pd.DataFrame(
+        {
+            "cycle_number": [3, 2, 1],
+            "block_height": [300, 200, 100],
+        }
+    )
 
     result = cycle_utils.map_burn_heights_to_cycles(df, cycles)
 

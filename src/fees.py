@@ -32,6 +32,7 @@ def _fee_chunk_sql(start_epoch: int, end_epoch: int) -> str:
         ORDER BY b.burn_block_height;
     """
 
+
 SIGNAL21_CACHE_DIR = cfg.CACHE_DIR / "signal21"
 SIGNAL21_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -71,7 +72,9 @@ def fetch_fees_by_tenure(
         end_epoch = now_epoch
     if start_epoch is None:
         start_epoch = int(
-            (datetime.now(UTC) - timedelta(days=cfg.default_date_horizon_days())).timestamp()
+            (
+                datetime.now(UTC) - timedelta(days=cfg.default_date_horizon_days())
+            ).timestamp()
         )
     if start_epoch > end_epoch:
         raise ValueError("start_epoch must be <= end_epoch")
@@ -164,7 +167,9 @@ def fetch_fees_by_tenure(
     return df
 
 
-def fetch_fee_per_tx_summary(window_days: int, *, force_refresh: bool = False) -> pd.DataFrame:
+def fetch_fee_per_tx_summary(
+    window_days: int, *, force_refresh: bool = False
+) -> pd.DataFrame:
     """Fetch per-transaction fee statistics for a trailing window."""
     cache_path = _fees_cache_path(f"fee_per_tx_{window_days}d")
     if not force_refresh:
@@ -175,27 +180,36 @@ def fetch_fee_per_tx_summary(window_days: int, *, force_refresh: bool = False) -
 
     end_epoch = int(datetime.now(UTC).timestamp())
     start_epoch = end_epoch - window_days * 24 * 3600
-    day_cursor = datetime.fromtimestamp(start_epoch, tz=UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    end_day = datetime.fromtimestamp(end_epoch, tz=UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_cursor = datetime.fromtimestamp(start_epoch, tz=UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    end_day = datetime.fromtimestamp(end_epoch, tz=UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     frames: list[pd.DataFrame] = []
     while day_cursor <= end_day:
         day_start_epoch = int(day_cursor.timestamp())
         day_end_epoch = int((day_cursor + timedelta(days=1)).timestamp())
         try:
-            df_day = run_sql_query(_fee_day_sql(day_start_epoch, day_end_epoch), force_refresh=force_refresh)
+            df_day = run_sql_query(
+                _fee_day_sql(day_start_epoch, day_end_epoch),
+                force_refresh=force_refresh,
+            )
         except Exception as exc:
             logger.warning(
                 "Fee-per-tx query failed for day %s (%s); recording NaNs",
                 day_cursor.date(),
                 exc,
             )
-            df_day = pd.DataFrame({
-                "fee_day": [day_cursor.date()],
-                "avg_fee_stx": [None],
-                "median_fee_stx": [None],
-                "p25_fee_stx": [None],
-                "p75_fee_stx": [None],
-            })
+            df_day = pd.DataFrame(
+                {
+                    "fee_day": [day_cursor.date()],
+                    "avg_fee_stx": [None],
+                    "median_fee_stx": [None],
+                    "p25_fee_stx": [None],
+                    "p75_fee_stx": [None],
+                }
+            )
         else:
             logger.debug("Fetched fee-per-tx stats for %s", day_cursor.date())
         frames.append(df_day)

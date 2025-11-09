@@ -43,7 +43,9 @@ def fetch_price_series(
 ) -> pd.DataFrame:
     """Fetch price data for a symbol and return as dataframe indexed by timestamp."""
     frames: list[pd.DataFrame] = []
-    queue: deque[tuple[datetime, datetime]] = deque(_iter_date_chunks(start, end, MAX_CHUNK_DAYS))
+    queue: deque[tuple[datetime, datetime]] = deque(
+        _iter_date_chunks(start, end, MAX_CHUNK_DAYS)
+    )
     session = _signal21_session()
 
     while queue:
@@ -78,8 +80,8 @@ def fetch_price_series(
 
     df = (
         pd.concat(frames, ignore_index=True)
-            .drop_duplicates(subset=["ts"])
-            .sort_values("ts")
+        .drop_duplicates(subset=["ts"])
+        .sort_values("ts")
     )
     if "price" in df.columns:
         df = df.rename(columns={"price": "px"})
@@ -147,7 +149,9 @@ def _iter_date_chunks(
     return chunks
 
 
-def run_sql_query(query: str, *, page_size: int | None = None, force_refresh: bool = False) -> pd.DataFrame:
+def run_sql_query(
+    query: str, *, page_size: int | None = None, force_refresh: bool = False
+) -> pd.DataFrame:
     """Execute a SQL query and return the concatenated dataframe."""
     offset = 0
     frames: list[pd.DataFrame] = []
