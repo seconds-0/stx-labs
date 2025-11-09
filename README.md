@@ -43,11 +43,19 @@ make backfill-tail    # follow backfill logs
 make backfill-stop    # stop background backfill process
 ```
 
-## Documentation
-- `docs/reset-plan.md` – high-level roadmap for stabilization.
-- `docs/local.md` – detailed local workflow (setup, caching, papermill).
-- `docs/colab.md` – optional hosted workflow if Colab is needed.
-- `docs/BACKFILL.md` – comprehensive guide for wallet transaction history backfill.
+> **Generated assets:** HTML dashboards live under `public/` after running
+> `scripts/build_dashboards.py`. Treat them as build artefacts; rerun the script
+> instead of editing the files directly.
+
+## Documentation Map
+- `docs/runbooks/backfill.md` – canonical wallet history backfill SOP.
+- `docs/runbooks/wallet_value.md` – end-to-end wallet funnel/value refresh steps.
+- `docs/runbooks/cache_maintenance.md` – how to prune stale cached data safely.
+- `docs/ops/README.md` – links to AGENT guidelines, monitoring, worktree tips.
+- `docs/decisions/` – PRDs, retros, review notes.
+- `docs/investigations/` – historical deep dives (backfill, notebook hangs, etc.).
+- `docs/local.md` / `docs/colab.md` – local & hosted workflow details.
+- `docs/reset-plan.md` – stabilization roadmap.
 
 ## Contribution Guidelines
 - Use beads (`bd ready`, `bd update`) to track work.
