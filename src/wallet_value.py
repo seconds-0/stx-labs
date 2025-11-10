@@ -53,6 +53,17 @@ def _as_utc(ts: datetime) -> datetime:
     return ts.astimezone(UTC)
 
 
+def _ensure_ns_timestamp(series: pd.Series) -> pd.Series:
+    """Coerce datetime64 series to timezone-aware nanosecond resolution."""
+    if not pd.api.types.is_datetime64_any_dtype(series):
+        series = pd.to_datetime(series, utc=True)
+    else:
+        if getattr(series.dtype, "tz", None) is None:
+            series = pd.to_datetime(series, utc=True)
+    values = series.astype("int64", copy=False)
+    return pd.to_datetime(values, utc=True)
+
+
 def compute_activation(first_seen: pd.DataFrame) -> pd.DataFrame:
     """Return activation timestamps per wallet (first_seen cache).
 
@@ -92,9 +103,9 @@ def _enrich_activity_with_prices(
     if activity.empty:
         return activity.copy()
     df = activity.copy()
-    df["block_time"] = pd.to_datetime(df["block_time"], utc=True)
+    df["block_time"] = _ensure_ns_timestamp(df["block_time"])
     price_panel = price_panel.copy()
-    price_panel["ts"] = pd.to_datetime(price_panel["ts"], utc=True)
+    price_panel["ts"] = _ensure_ns_timestamp(price_panel["ts"])
     df = pd.merge_asof(
         df.sort_values("block_time"),
         price_panel.sort_values("ts"),
