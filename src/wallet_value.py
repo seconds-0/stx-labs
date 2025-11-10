@@ -317,3 +317,136 @@ def compute_value_pipeline(
         "windows": windows_agg,
         "classification": cls,
     }
+
+
+def compute_network_daily(activity: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate fees/NV per calendar day."""
+    if activity.empty:
+        return pd.DataFrame(
+            columns=["activity_date", "tx_count", "wallets", "fee_stx_sum", "nv_btc_sum"]
+        )
+    df = activity.copy()
+    df["activity_date"] = pd.to_datetime(df["block_time"], utc=True).dt.floor("D")
+    grouped = (
+        df.groupby("activity_date")
+        .agg(
+            tx_count=("tx_id", "count"),
+            wallets=("address", "nunique"),
+            fee_stx_sum=("fee_stx", "sum"),
+            nv_btc_sum=("nv_btc", "sum"),
+        )
+        .reset_index()
+    )
+    return grouped.sort_values("activity_date")
+
+
+def summarize_value_kpis(
+    *,
+    daily_activity: pd.DataFrame,
+    windows_agg: pd.DataFrame,
+    classification: pd.DataFrame,
+    lookback_days: int = 30,
+    window_days: int = 30,
+) -> dict[str, float]:
+    """Return headline KPIs for dashboards."""
+    today = pd.Timestamp.now(tz=UTC).floor("D")
+    start = today - pd.Timedelta(days=max(lookback_days - 1, 0))
+
+    recent_daily = (
+        daily_activity[daily_activity["activity_date"] >= start]
+        if not daily_activity.empty
+        else pd.DataFrame()
+    )
+    w = windows_agg[windows_agg["window_days"] == window_days]
+    recent_cls = (
+        classification[
+            pd.to_datetime(classification["activation_date"], utc=True) >= start
+        ]
+        if not classification.empty
+        else pd.DataFrame()
+    )
+
+    total_nv_btc = (
+        float(recent_daily["nv_btc_sum"].sum()) if not recent_daily.empty else 0.0
+    )
+    total_fee_stx = (
+        float(recent_daily["fee_stx_sum"].sum()) if not recent_daily.empty else 0.0
+    )
+    avg_waltv = float(w["fee_stx_sum"].mean()) if not w.empty else 0.0
+    median_waltv = float(w["fee_stx_sum"].median()) if not w.empty else 0.0
+
+    funded = int(recent_cls["funded"].sum()) if not recent_cls.empty else 0
+    active = int(recent_cls["active_30d"].sum()) if not recent_cls.empty else 0
+    value = int(recent_cls["value_30d"].sum()) if not recent_cls.empty else 0
+
+    active_pct = (active / funded * 100) if funded else 0.0
+    value_pct = (value / funded * 100) if funded else 0.0
+
+    return {
+        "total_nv_btc": total_nv_btc,
+        "total_fee_stx": total_fee_stx,
+        "avg_waltv_stx": avg_waltv,
+        "median_waltv_stx": median_waltv,
+        "funded_wallets": funded,
+        "active_wallets": active,
+        "value_wallets": value,
+        "active_pct": active_pct,
+        "value_pct": value_pct,
+    }
+
+
+def compute_cpa_panel(
+    windows_agg: pd.DataFrame,
+    *,
+    window_days: int = 30,
+    cpa_target_stx: float = 5.0,
+    min_wallets: int = 5,
+) -> pd.DataFrame:
+    """Aggregate WALTV by activation cohort with CPA comparison."""
+    if windows_agg.empty:
+        return pd.DataFrame(
+            columns=[
+                "activation_date",
+                "avg_waltv_stx",
+                "median_waltv_stx",
+                "wallets",
+                "payback_multiple",
+                "above_target",
+            ]
+        )
+
+    window_df = windows_agg[windows_agg["window_days"] == window_days].copy()
+    if window_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "activation_date",
+                "avg_waltv_stx",
+                "median_waltv_stx",
+                "wallets",
+                "payback_multiple",
+                "above_target",
+            ]
+        )
+
+    window_df["activation_date"] = pd.to_datetime(
+        window_df["activation_date"], utc=True
+    )
+    grouped = (
+        window_df.groupby("activation_date")
+        .agg(
+            avg_waltv_stx=("fee_stx_sum", "mean"),
+            median_waltv_stx=("fee_stx_sum", "median"),
+            wallets=("address", "count"),
+        )
+        .reset_index()
+        .sort_values("activation_date")
+    )
+    grouped = grouped[grouped["wallets"] >= max(min_wallets, 1)]
+
+    if grouped.empty:
+        return grouped
+
+    grouped["payback_multiple"] = grouped["avg_waltv_stx"] / cpa_target_stx
+    grouped["above_target"] = grouped["avg_waltv_stx"] >= cpa_target_stx
+    grouped["activation_date"] = grouped["activation_date"].dt.tz_convert(UTC)
+    return grouped.reset_index(drop=True)

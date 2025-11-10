@@ -115,3 +115,49 @@ def test_classification_with_balance_lookup():
     assert bool(b.funded) is False
     assert bool(b.active_30d) is False
     assert bool(b.value_30d) is False
+
+
+def test_compute_network_daily_and_kpis():
+    activity = _activity_fixture()
+    activity["fee_stx"] = activity["fee_ustx"] / wallet_value.MICROSTX_PER_STX
+    activity["nv_btc"] = activity["fee_stx"] * 0.000015
+    daily = wallet_value.compute_network_daily(activity)
+    assert len(daily) == 4  # four unique dates
+    assert int(daily["tx_count"].sum()) == 4
+
+    first_seen = _first_seen_fixture()
+    prices = _price_panel_fixture()
+    windows = wallet_value.compute_wallet_windows(
+        activity, first_seen, prices, windows=(30,)
+    )
+    cls = wallet_value.classify_wallets(
+        first_seen=first_seen,
+        activity=activity,
+        windows_agg=windows,
+        thresholds=wallet_value.ClassificationThresholds(),
+        balance_lookup={"A": 20.0, "B": 0.5},
+    )
+    kpis = wallet_value.summarize_value_kpis(
+        daily_activity=daily,
+        windows_agg=windows,
+        classification=cls,
+        lookback_days=365,
+    )
+    assert kpis["funded_wallets"] == 1
+    assert kpis["value_wallets"] == 1
+    assert round(kpis["total_fee_stx"], 3) == 1.501
+
+
+def test_compute_cpa_panel():
+    activity = _activity_fixture()
+    first_seen = _first_seen_fixture()
+    prices = _price_panel_fixture()
+    windows = wallet_value.compute_wallet_windows(
+        activity, first_seen, prices, windows=(30,)
+    )
+    panel = wallet_value.compute_cpa_panel(
+        windows, window_days=30, cpa_target_stx=0.5, min_wallets=1
+    )
+    assert not panel.empty
+    assert "payback_multiple" in panel.columns
+    assert panel["payback_multiple"].iloc[0] > 0
