@@ -30,6 +30,7 @@ from .hiro import fetch_address_balances
 
 
 MICROSTX_PER_STX = 1_000_000
+MIN_WALTV_COHORT = 3  # Minimum wallets required for ROI panels
 
 
 @dataclass(frozen=True)
@@ -440,9 +441,15 @@ def compute_cpa_panel(
     *,
     window_days: int = 30,
     cpa_target_stx: float = 5.0,
-    min_wallets: int = 5,
+    min_wallets: int = MIN_WALTV_COHORT,
 ) -> pd.DataFrame:
     """Aggregate WALTV by activation cohort with CPA comparison."""
+    if window_days <= 0:
+        raise ValueError("window_days must be positive")
+    if cpa_target_stx <= 0:
+        raise ValueError("cpa_target_stx must be positive")
+    if min_wallets < 1:
+        raise ValueError("min_wallets must be >= 1")
     if windows_agg.empty:
         return pd.DataFrame(
             columns=[
@@ -468,9 +475,11 @@ def compute_cpa_panel(
             ]
         )
 
-    window_df["activation_date"] = pd.to_datetime(
-        window_df["activation_date"], utc=True
-    )
+    window_df = window_df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(window_df["activation_date"]):
+        window_df["activation_date"] = pd.to_datetime(
+            window_df["activation_date"], utc=True
+        )
     grouped = (
         window_df.groupby("activation_date")
         .agg(

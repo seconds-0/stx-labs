@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from string import Template
@@ -14,17 +16,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 
-import sys
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src import wallet_metrics
 from src import macro_data
-from src import prices
-from src import wallet_value
 from src import pox_yields
+from src import prices
+from src import wallet_metrics
+from src import wallet_value
+
+
+LOGGER = logging.getLogger(__name__)
+SUPPORTED_ROI_WINDOWS: tuple[int, ...] = (30, 60, 90)
 
 
 def _write_html(output_path: Path, title: str, sections: Iterable[str]) -> None:
@@ -620,27 +624,33 @@ def build_value_dashboard(
         lookback_days=30,
     )
     cpa_panels: dict[int, pd.DataFrame] = {}
-    for roi_window in (30, 60, 90):
+    for roi_window in SUPPORTED_ROI_WINDOWS:
         if roi_window in set(windows):
             cpa_panels[roi_window] = wallet_value.compute_cpa_panel(
                 windows_df,
                 window_days=roi_window,
                 cpa_target_stx=cpa_target_stx,
-                min_wallets=3,
+                min_wallets=wallet_value.MIN_WALTV_COHORT,
             )
     window_stats: dict[int, dict[str, float | int]] = {}
-    for win in (30, 60, 90):
+    for win in SUPPORTED_ROI_WINDOWS:
         if win in set(windows):
             window_stats[win] = wallet_value.summarize_window_stats(
                 windows_df, window_days=win
             )
 
-    pox_summary = pox_yields.get_cycle_yield_summary(
-        last_n_cycles=8, force_refresh=force_refresh
-    )
-    cycles_df = pox_yields.fetch_pox_cycles_data(force_refresh=force_refresh)
-    rewards_df = pox_yields.aggregate_rewards_by_cycle(force_refresh=force_refresh)
-    cycle_apy_df = pox_yields.calculate_cycle_apy(cycles_df, rewards_df)
+    try:
+        pox_summary = pox_yields.get_cycle_yield_summary(
+            last_n_cycles=8, force_refresh=force_refresh
+        )
+        cycles_df = pox_yields.fetch_pox_cycles_data(force_refresh=force_refresh)
+        rewards_df = pox_yields.aggregate_rewards_by_cycle(force_refresh=force_refresh)
+        cycle_apy_df = pox_yields.calculate_cycle_apy(cycles_df, rewards_df)
+    except Exception as exc:
+        LOGGER.warning("PoX data unavailable: %s", exc)
+        pox_summary = {}
+        cycle_apy_df = pd.DataFrame()
+
     recent_cycles = (
         cycle_apy_df.sort_values("cycle_number", ascending=False)
         .head(8)
@@ -970,6 +980,11 @@ def build_value_dashboard(
 
 
 def main() -> None:
+    def positive_float(value: str) -> float:
+        val = float(value)
+        if val <= 0:
+            raise argparse.ArgumentTypeError("Value must be > 0")
+        return val
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wallet-max-days", type=int, default=180, help="History window for wallet metrics.")
     parser.add_argument(
@@ -1022,9 +1037,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--cpa-target-stx",
-        type=float,
+        type=positive_float,
         default=5.0,
-        help="Target STX WALTV for CPA payback comparisons.",
+        help="Target STX WALTV for CPA payback comparisons (must be > 0).",
     )
     args = parser.parse_args()
 

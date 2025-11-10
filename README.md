@@ -51,12 +51,12 @@ Need to refresh the value dashboard while the long backfill is still writing?
 Use the snapshot options:
 
 ```bash
-python scripts/build_dashboards.py --value-only --wallet-db-snapshot
+python scripts/build_dashboards.py --value-only --wallet-db-snapshot --cpa-target-stx 5
 ```
 
-Add `--cpa-target-stx 5` (or any target) to tune the new ROI panel. The script
-copies `wallet_metrics.duckdb` to a temp file, skips the history sync, and
-cleans up automatically.
+CPA panels are calibrated for 30/60/90 day windows; include those in
+`--wallet-windows` when refreshing. The script copies `wallet_metrics.duckdb` to
+a temp file, skips the history sync, and cleans up automatically.
 
 ## Documentation Map
 - `docs/runbooks/backfill.md` – canonical wallet history backfill SOP.
