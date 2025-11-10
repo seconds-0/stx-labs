@@ -47,6 +47,16 @@ make backfill-stop    # stop background backfill process
 > `scripts/build_dashboards.py`. Treat them as build artefacts; rerun the script
 > instead of editing the files directly.
 
+Need to refresh the value dashboard while the long backfill is still writing?
+Use the snapshot options:
+
+```bash
+python scripts/build_dashboards.py --value-only --wallet-db-snapshot
+```
+
+This copies `wallet_metrics.duckdb` to a temp file, skips the history sync, and
+cleans up automatically.
+
 ## Documentation Map
 - `docs/runbooks/backfill.md` – canonical wallet history backfill SOP.
 - `docs/runbooks/wallet_value.md` – end-to-end wallet funnel/value refresh steps.

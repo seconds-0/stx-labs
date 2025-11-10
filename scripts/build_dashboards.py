@@ -591,6 +591,8 @@ def build_value_dashboard(
     max_days: int,
     windows: Sequence[int],
     force_refresh: bool,
+    wallet_db_path: Path | None = None,
+    skip_history_sync: bool = False,
 ) -> None:
     """Generate CPI/CPA-style wallet value dashboard.
 
@@ -598,7 +600,11 @@ def build_value_dashboard(
     until derived value and incentives data sources are integrated.
     """
     data = wallet_value.compute_value_pipeline(
-        max_days=max_days, windows=windows, force_refresh=force_refresh
+        max_days=max_days,
+        windows=windows,
+        force_refresh=force_refresh,
+        wallet_db_path=wallet_db_path,
+        skip_history_sync=skip_history_sync,
     )
     windows_df = data["windows"]
     cls = data["classification"]
@@ -739,6 +745,26 @@ def main() -> None:
         default=Path("public"),
         help="Directory for Vercel-ready static assets.",
     )
+    parser.add_argument(
+        "--value-only",
+        action="store_true",
+        help="Only build the wallet value dashboard (skip wallet & macro).",
+    )
+    parser.add_argument(
+        "--wallet-db-path",
+        type=Path,
+        help="Override wallet metrics DuckDB path for read-only runs.",
+    )
+    parser.add_argument(
+        "--wallet-db-snapshot",
+        action="store_true",
+        help="Copy the wallet metrics DuckDB to a temp snapshot before building dashboards.",
+    )
+    parser.add_argument(
+        "--skip-wallet-history-sync",
+        action="store_true",
+        help="Skip ensure_transaction_history (useful when pointing at snapshots).",
+    )
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -746,35 +772,68 @@ def main() -> None:
     macro_html = args.out_dir / "macro_dashboard.html"
     value_html = args.out_dir / "wallet_value_dashboard.html"
 
-    build_wallet_dashboard(
-        output_path=wallet_html,
-        max_days=args.wallet_max_days,
-        windows=args.wallet_windows,
-        force_refresh=args.force_refresh,
-    )
-    build_macro_dashboard(
-        output_path=macro_html,
-        history_days=args.macro_history_days,
-        force_refresh=args.force_refresh,
-    )
-    build_value_dashboard(
-        output_path=value_html,
-        max_days=args.wallet_max_days,
-        windows=args.value_windows,
-        force_refresh=args.force_refresh,
-    )
+    wallet_db_path = args.wallet_db_path
+    skip_history_sync = args.skip_wallet_history_sync
+    snapshot_path: Path | None = None
+
+    if args.wallet_db_snapshot:
+        snapshot_path = wallet_metrics.create_db_snapshot()
+        wallet_db_path = snapshot_path
+        skip_history_sync = True
+        print(f"Using wallet DB snapshot at {snapshot_path}")
+    elif wallet_db_path is not None and not skip_history_sync:
+        print(
+            "Custom wallet DB path detected; skipping history sync to avoid touching the primary DB."
+        )
+        skip_history_sync = True
+
+    try:
+        built_wallet = False
+        built_macro = False
+
+        if not args.value_only:
+            build_wallet_dashboard(
+                output_path=wallet_html,
+                max_days=args.wallet_max_days,
+                windows=args.wallet_windows,
+                force_refresh=args.force_refresh,
+            )
+            built_wallet = True
+
+        build_value_dashboard(
+            output_path=value_html,
+            max_days=args.wallet_max_days,
+            windows=args.value_windows,
+            force_refresh=args.force_refresh,
+            wallet_db_path=wallet_db_path,
+            skip_history_sync=skip_history_sync,
+        )
+
+        if not args.value_only:
+            build_macro_dashboard(
+                output_path=macro_html,
+                history_days=args.macro_history_days,
+                force_refresh=args.force_refresh,
+            )
+            built_macro = True
+    finally:
+        if snapshot_path is not None and snapshot_path.exists():
+            snapshot_path.unlink()
+            print(f"Removed wallet DB snapshot {snapshot_path}")
 
     # Copy dashboards into public structure for deployment.
     if args.public_dir:
-        wallet_public = args.public_dir / "wallet" / "index.html"
-        wallet_public.parent.mkdir(parents=True, exist_ok=True)
-        wallet_public.write_text(wallet_html.read_text(encoding="utf-8"), encoding="utf-8")
-        print(f"Copied {wallet_html} -> {wallet_public}")
+        if not args.value_only and built_wallet:
+            wallet_public = args.public_dir / "wallet" / "index.html"
+            wallet_public.parent.mkdir(parents=True, exist_ok=True)
+            wallet_public.write_text(wallet_html.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"Copied {wallet_html} -> {wallet_public}")
 
-        macro_public = args.public_dir / "macro" / "index.html"
-        macro_public.parent.mkdir(parents=True, exist_ok=True)
-        macro_public.write_text(macro_html.read_text(encoding="utf-8"), encoding="utf-8")
-        print(f"Copied {macro_html} -> {macro_public}")
+        if not args.value_only and built_macro:
+            macro_public = args.public_dir / "macro" / "index.html"
+            macro_public.parent.mkdir(parents=True, exist_ok=True)
+            macro_public.write_text(macro_html.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"Copied {macro_html} -> {macro_public}")
 
         value_public = args.public_dir / "value" / "index.html"
         value_public.parent.mkdir(parents=True, exist_ok=True)

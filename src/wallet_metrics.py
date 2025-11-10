@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import duckdb
 import pandas as pd
+import shutil
+import time
 
 from . import config as cfg
 from .cache_utils import read_parquet, write_parquet
@@ -28,8 +31,16 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _connect(read_only: bool = False) -> duckdb.DuckDBPyConnection:
-    path = str(DUCKDB_PATH)
+def _resolve_db_path(db_path: Path | None = None) -> Path:
+    if db_path is not None:
+        return Path(db_path)
+    return DUCKDB_PATH
+
+
+def _connect(
+    read_only: bool = False, *, db_path: Path | None = None
+) -> duckdb.DuckDBPyConnection:
+    path = str(_resolve_db_path(db_path))
     return duckdb.connect(path, read_only=read_only)
 
 
@@ -317,12 +328,13 @@ def build_wallet_metrics(
 def load_recent_wallet_activity(
     *,
     max_days: int,
+    db_path: Path | None = None,
 ) -> pd.DataFrame:
     if max_days <= 0:
         raise ValueError("max_days must be positive")
     start_cutoff = _utc_now() - timedelta(days=max_days)
     cutoff_naive = start_cutoff.astimezone(UTC).replace(tzinfo=None)
-    with _connect(read_only=True) as conn:
+    with _connect(read_only=True, db_path=db_path) as conn:
         df = conn.execute(
             """
             SELECT
@@ -363,6 +375,21 @@ def load_recent_wallet_activity(
         ]
     ].copy()
     return df
+
+
+def create_db_snapshot(destination: Path | None = None) -> Path:
+    """Copy the DuckDB wallet metrics database for read-only use."""
+
+    source = _resolve_db_path()
+    if not source.exists():
+        raise FileNotFoundError(f"Wallet metrics DB not found at {source}")
+    target = destination
+    if target is None:
+        timestamp = int(time.time())
+        target = cfg.CACHE_DIR / f"wallet_metrics_snapshot_{timestamp}.duckdb"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return target
 
 
 def load_first_seen_cache() -> pd.DataFrame:

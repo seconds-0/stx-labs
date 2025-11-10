@@ -53,6 +53,14 @@ This command:
   positive integers. Keep 30 in the list for funnel classification.
 - **Dash destination:** By default the script writes into `public/`. To keep the
   repo clean, prefer generating into `out/public` and deploying from there.
+- **Backfill still running?** Use `--value-only --wallet-db-snapshot` to clone
+  the DuckDB file and skip `ensure_transaction_history`, e.g.:
+
+  ```bash
+  python scripts/build_dashboards.py --value-only --wallet-db-snapshot --wallet-max-days 365
+  ```
+
+  The snapshot is deleted automatically after the run.
 
 ---
 
@@ -72,4 +80,3 @@ This command:
 - Strategy & definitions: `docs/wallet_value_plan.md`
 - Beads plan: `docs/beads_wallet_value.md`
 - Backfill playbook: `docs/runbooks/backfill.md`
-

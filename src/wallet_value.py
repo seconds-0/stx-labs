@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -280,6 +281,8 @@ def compute_value_pipeline(
     max_days: int,
     windows: Sequence[int] = (15, 30, 60, 90),
     force_refresh: bool = False,
+    wallet_db_path: Path | None = None,
+    skip_history_sync: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """End-to-end pipeline to compute wallet value analytics for dashboards.
 
@@ -289,10 +292,13 @@ def compute_value_pipeline(
       - classification: funded/active/value flags per wallet
     """
     # Ensure transaction history exists and load
-    wallet_metrics.ensure_transaction_history(
-        max_days=max_days, force_refresh=force_refresh
+    if not skip_history_sync:
+        wallet_metrics.ensure_transaction_history(
+            max_days=max_days, force_refresh=force_refresh
+        )
+    activity = wallet_metrics.load_recent_wallet_activity(
+        max_days=max_days, db_path=wallet_db_path
     )
-    activity = wallet_metrics.load_recent_wallet_activity(max_days=max_days)
     first_seen = wallet_metrics.update_first_seen_cache(activity)
 
     # Load prices and compute aggregates
