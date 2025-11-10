@@ -65,8 +65,9 @@ This command:
 - **Dashboard Content:** The value dashboard now surfaces:
   - KPI header (30d NV, WALTV stats, funded→value conversion, PoX APY snapshot).
   - Network trend (30d rolling NV vs fees).
-  - ROI/CPA panel with payback multiples vs configured target.
+  - ROI/CPA panels for 30/60/90d WALTV relative to the CPA target.
   - PoX linkage chart/table showing miner BTC commits vs APY.
+  - WALTV window comparison table for 30/60/90d cohorts.
 
 ---
 

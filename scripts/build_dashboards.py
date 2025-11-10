@@ -619,12 +619,21 @@ def build_value_dashboard(
         classification=cls,
         lookback_days=30,
     )
-    cpa_panel = wallet_value.compute_cpa_panel(
-        windows_df,
-        window_days=30,
-        cpa_target_stx=cpa_target_stx,
-        min_wallets=3,
-    )
+    cpa_panels: dict[int, pd.DataFrame] = {}
+    for roi_window in (30, 60, 90):
+        if roi_window in set(windows):
+            cpa_panels[roi_window] = wallet_value.compute_cpa_panel(
+                windows_df,
+                window_days=roi_window,
+                cpa_target_stx=cpa_target_stx,
+                min_wallets=3,
+            )
+    window_stats: dict[int, dict[str, float | int]] = {}
+    for win in (30, 60, 90):
+        if win in set(windows):
+            window_stats[win] = wallet_value.summarize_window_stats(
+                windows_df, window_days=win
+            )
 
     pox_summary = pox_yields.get_cycle_yield_summary(
         last_n_cycles=8, force_refresh=force_refresh
@@ -674,6 +683,14 @@ def build_value_dashboard(
     sections.append(
         f"<div class='kpi-card'><div class='kpi-label'>Value Wallets (30d)</div><div class='kpi-value'>{kpis['value_wallets']}</div><div class='kpi-subtext'>Active {kpis['active_wallets']}</div></div>"
     )
+    for extra_window in (60, 90):
+        stats = window_stats.get(extra_window)
+        if stats and stats["wallets"] > 0:
+            sections.append(
+                f"<div class='kpi-card'><div class='kpi-label'>Avg WALTV-{extra_window}</div>"
+                f"<div class='kpi-value'>{_fmt(stats['avg_waltv_stx'], ' STX')}</div>"
+                f"<div class='kpi-subtext'>Median {_fmt(stats['median_waltv_stx'], ' STX')}</div></div>"
+            )
     if pox_summary.get("apy_btc_median") is not None:
         sections.append(
             f"<div class='kpi-card'><div class='kpi-label'>PoX APY (median)</div><div class='kpi-value'>{pox_summary['apy_btc_median']}%</div><div class='kpi-subtext'>Participation {pox_summary.get('participation_rate_mean', '—')}%</div></div>"
@@ -761,23 +778,27 @@ def build_value_dashboard(
             ]
         )
 
-    # CPA / ROI panel
-    if not cpa_panel.empty:
+    # CPA / ROI panels across windows
+    for roi_window, panel in cpa_panels.items():
+        if panel.empty:
+            continue
         cpa_fig = px.line(
-            cpa_panel,
+            panel,
             x="activation_date",
             y="payback_multiple",
-            title="Payback Multiple vs Target",
+            title=f"Payback Multiple vs Target ({roi_window}d)",
             labels={"activation_date": "Activation Date", "payback_multiple": "Avg WALTV / CPA Target"},
             template="plotly_dark",
         )
-        cpa_fig.add_hline(y=1.0, line_dash="dash", line_color="#ffaf40", annotation_text="Target payback")
-        cpa_table = cpa_panel.copy()
+        cpa_fig.add_hline(
+            y=1.0, line_dash="dash", line_color="#ffaf40", annotation_text="Target payback"
+        )
+        cpa_table = panel.copy()
         cpa_table["activation_date"] = cpa_table["activation_date"].dt.strftime("%Y-%m-%d")
         cpa_table = cpa_table.rename(
             columns={
-                "avg_waltv_stx": "Avg WALTV-30 (STX)",
-                "median_waltv_stx": "Median WALTV-30 (STX)",
+                "avg_waltv_stx": f"Avg WALTV-{roi_window} (STX)",
+                "median_waltv_stx": f"Median WALTV-{roi_window} (STX)",
                 "wallets": "Wallets",
                 "payback_multiple": "Payback Multiple",
                 "above_target": "≥ Target",
@@ -786,10 +807,35 @@ def build_value_dashboard(
         sections.extend(
             [
                 "<div class='section'>",
-                "<h2>ROI & CPA Signal</h2>",
-                f"<p class='note'>Target CPA: {cpa_target_stx} STX. Payback multiple compares WALTV-30 to the target.</p>",
+                f"<h2>ROI & CPA Signal ({roi_window}d)</h2>",
+                f"<p class='note'>Target CPA: {cpa_target_stx} STX. Payback multiple compares WALTV-{roi_window} to the target.</p>",
                 pio.to_html(cpa_fig, include_plotlyjs="cdn", full_html=False),
                 cpa_table.to_html(index=False),
+                "</div>",
+            ]
+        )
+
+    # Multi-window WALTV summary
+    window_rows: list[dict[str, object]] = []
+    for win, stats in window_stats.items():
+        if not stats or stats["wallets"] == 0:
+            continue
+        window_rows.append(
+            {
+                "Window": f"{win}d",
+                "Wallets": stats["wallets"],
+                "Avg WALTV (STX)": stats["avg_waltv_stx"],
+                "Median WALTV (STX)": stats["median_waltv_stx"],
+                "Total Fees (STX)": stats["fee_stx_sum"],
+            }
+        )
+    if window_rows:
+        window_table = pd.DataFrame(window_rows)
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>WALTV Window Comparison</h2>",
+                window_table.to_html(index=False),
                 "</div>",
             ]
         )

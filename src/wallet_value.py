@@ -395,6 +395,46 @@ def summarize_value_kpis(
     }
 
 
+def summarize_window_stats(
+    windows_agg: pd.DataFrame,
+    *,
+    window_days: int,
+) -> dict[str, float | int]:
+    """Return aggregate WALTV stats for a specific window."""
+    if windows_agg.empty:
+        return {
+            "window_days": window_days,
+            "wallets": 0,
+            "avg_waltv_stx": 0.0,
+            "median_waltv_stx": 0.0,
+            "nv_btc_sum": 0.0,
+            "fee_stx_sum": 0.0,
+        }
+    window_df = windows_agg[windows_agg["window_days"] == window_days]
+    if window_df.empty:
+        return {
+            "window_days": window_days,
+            "wallets": 0,
+            "avg_waltv_stx": 0.0,
+            "median_waltv_stx": 0.0,
+            "nv_btc_sum": 0.0,
+            "fee_stx_sum": 0.0,
+        }
+    avg = float(window_df["fee_stx_sum"].mean())
+    median = float(window_df["fee_stx_sum"].median())
+    wallets = int(len(window_df))
+    nv_btc = float(window_df["nv_btc_sum"].mean()) if "nv_btc_sum" in window_df else 0.0
+    fee_sum = float(window_df["fee_stx_sum"].sum())
+    return {
+        "window_days": window_days,
+        "wallets": wallets,
+        "avg_waltv_stx": avg,
+        "median_waltv_stx": median,
+        "nv_btc_sum": nv_btc,
+        "fee_stx_sum": fee_sum,
+    }
+
+
 def compute_cpa_panel(
     windows_agg: pd.DataFrame,
     *,

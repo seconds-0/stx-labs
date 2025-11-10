@@ -161,3 +161,17 @@ def test_compute_cpa_panel():
     assert not panel.empty
     assert "payback_multiple" in panel.columns
     assert panel["payback_multiple"].iloc[0] > 0
+
+
+def test_summarize_window_stats():
+    activity = _activity_fixture()
+    first_seen = _first_seen_fixture()
+    prices = _price_panel_fixture()
+    windows = wallet_value.compute_wallet_windows(
+        activity, first_seen, prices, windows=(30, 60)
+    )
+    stats30 = wallet_value.summarize_window_stats(windows, window_days=30)
+    assert stats30["wallets"] == 2
+    assert stats30["avg_waltv_stx"] > 0
+    stats90 = wallet_value.summarize_window_stats(windows, window_days=90)
+    assert stats90["wallets"] == 0
