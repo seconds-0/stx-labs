@@ -1,44 +1,74 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-- `notebooks/` – primary Jupyter notebooks, including `stx_pox_flywheel.ipynb`.
-- `src/` – reusable Python modules (data clients, transforms, scenario logic).
-- `tests/` – pytest suite mirroring `src/` layout.
-- `data/raw/` – cached API payloads; keep out of version control.
-- `out/` – generated parquet, CSV, and chart artifacts.
-- `.beads/` – issue tracker state; never edit manually.
+## 1. Mission, KPIs, and Data Sources
+- **North Star:** Grow fee-denominated Network Value (NV) so PoX yields remain competitive and Stacks becomes the default BTC execution layer. Wallet funnels (funded → active → value) and WALTV (wallet-adjusted LTV) are our shared KPI set.
+- **Key docs:**  
+  - Strategy & plan: `docs/wallet_value_plan.md`, `docs/beads_wallet_value.md`  
+  - Runbooks: `docs/runbooks/backfill.md`, `docs/runbooks/wallet_value.md`, `docs/runbooks/cache_maintenance.md`  
+  - Operational policies: `docs/ops/README.md` (links to AGENT/monitoring/worktree refs)  
+  - Decision history: `docs/decisions/README.md` (PRDs, retros, reviews)  
+  - Investigations archive: `docs/investigations/*`
+- **Modules to know:**  
+  - `src/wallet_metrics.py` – Hiro ingestion + DuckDB cache  
+  - `src/wallet_value.py` – NV/WALTV windows, classification, CPA helpers  
+  - `src/pox_yields.py` – PoX cycle summaries for dashboard linkage  
+  - `scripts/build_dashboards.py` – wallet/macro/value dashboards (HTML)  
+  - `scripts/backfill_wallet_history.py` & helpers – long-running ingestion  
+  - `scripts/README.md` documents every automation script and status.
 
-## Build, Test, and Development Commands
-- `make setup` – create/enter virtualenv and install dependencies.
-- `make lab` – launch JupyterLab from repo root (preferred interactive flow).
-- `make test` – run automated tests (fast, default suite).
-- `make lint` – format/lint via black + ruff.
-- `make notebook` – papermill execution to `out/stx_pox_flywheel_run.ipynb`.
-- `bd ready --json` – list unblocked beads issues prior to picking tasks.
+## 2. Standard Commands & Tooling
 
-## Coding Style & Naming Conventions
-- Python formatted with `black` (PEP 8, 88-char lines) and linted via `ruff`.
-- Favor type hints in `src/`, docstrings for public functions, and descriptive module names (`prices_client.py`, `pox_scenarios.py`).
-- Notebook cells should import from `src/`, avoid ad-hoc logic duplication.
+| Task | Command / Notes |
+| --- | --- |
+| Bootstrap env | `make setup` (creates `.venv`, installs requirements) |
+| Launch JupyterLab | `make lab` |
+| Run notebook (full) | `make notebook` (papermill to `out/stx_pox_flywheel_run.ipynb`) |
+| Smoke notebook (30d) | `make smoke-notebook` |
+| Tests / lint | `make test`, `make lint` |
+| Wallet status | `python scripts/check_backfill_status.py --target-days 365` |
+| Backfill (foreground) | `python scripts/backfill_wallet_history.py --target-days 365 --max-pages 5000 --max-iterations 0` |
+| Backfill (background/tmux) | `./scripts/backfill_tmux.sh start` or `make backfill-tmux` |
+| Wallet value dashboard | `python scripts/build_dashboards.py --value-only --wallet-max-days 365 --wallet-windows 15 30 60 90 --wallet-db-snapshot --cpa-target-stx 5` |
+| Full dashboards | `python scripts/build_dashboards.py --wallet-max-days 365 --wallet-db-snapshot --public-dir public` |
+| Sync `.env` | `./scripts/sync_env.sh` |
+| Beads CLI | `bd ready`, `bd show <id>`, `bd update <id> --status ...` |
 
-## Testing Guidelines
-- All new logic requires accompanying pytest coverage under `tests/` using `test_<module>.py`.
-- Mock external HTTP calls (Signal21, Hiro) with fixtures; never hit live APIs in unit tests.
-- Maintain ≥80% line coverage; document exceptions in PR description.
+**Dashboard tips**
+- `--wallet-db-snapshot` clones `wallet_metrics.duckdb` for read-only runs when the main backfill holds a lock.
+- `--value-only` skips the wallet/macro dashboards to focus on WALTV updates.
+- `--cpa-target-stx` controls the WALTV payback panels (default 5 STX). Document the chosen target in PRs.
 
-## Commit & Pull Request Guidelines
-- Use Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`) for clarity and release tooling.
-- Scope commits narrowly; include data or notebook artifacts only when necessary and reproducible.
-- PRs must reference bead IDs (`bd-###`), describe validation steps, and attach key screenshots (plots) when visuals change.
-- Ensure CI (pytest + formatting) passes before requesting review.
+**Backfill workflow**
+1. Confirm `.env` present (HIRO_API_KEY) via `./scripts/sync_env.sh`.
+2. Run `scripts/backfill_wallet_history.py` (use tmux + `caffeinate` for >12h jobs).  
+3. Monitor with `python scripts/check_backfill_status.py` or `make backfill-status`.  
+4. After completion run dashboards + `make smoke-notebook` or `make notebook`.
+5. Use `make refresh-prices` or `docs/runbooks/cache_maintenance.md` for cache hygiene.
 
-## Agent-Specific Instructions
-- Always execute the notebook locally (papermill or make targets) and confirm end-to-end success before reporting completion; surface any failures with logs.
-- Track all work through beads CLI (`bd`); avoid markdown TODOs.
-- Respect cache directories: wipe `data/raw/` or `data/cache/` selectively, never commit secrets or API keys.
-- Preferred workflow is local JupyterLab (see `docs/local.md` for full setup). Colab (`docs/colab.md`) is optional and should rely on cached artifacts when APIs are unstable.
+## 3. Coding + Testing Expectations
+- Follow Black (88 cols) + Ruff; add type hints/docstrings to public APIs.
+- Every new module/function must have pytest coverage (`tests/test_<module>.py`). Mock external APIs (Hiro, Signal21).
+- WALTV features: accompany dashboard changes with unit tests in `tests/test_wallet_value.py`.
+- Keep WALTV vs CPA assumptions explicit in PR description (target STX, snapshot usage, etc.).
+- Never hit live APIs from tests; rely on fixtures/stubs.
 
-## Git Worktree Management
+## 4. Git, Beads, and Worktrees
+- Use Conventional Commits with bead IDs (e.g., `feat: add wallet value KPIs (bd-123)`).
+- Keep commits narrow; data artifacts only when reproducible.
+- Track work in beads CLI. `bd ready` before picking tasks; update status when delivering.
+- **Worktrees:** see “Git Worktree Management” below. Critical: `.env` and caches are not shared; run `./scripts/sync_env.sh` after creating or before merging.
+- Prefer feature branches per bead (`git checkout -b feat/value-dashboard-aug`). Push early/often.
+
+## 5. Agent Checklist
+1. Run `bd ready` → pick issue → branch.
+2. Ensure `.env` + `.venv` exist; `make setup`.
+3. For wallet work: check DuckDB coverage (`check_backfill_status`). If lacking, coordinate long backfill run.
+4. Implement + tests (`make test`). For dashboards, regenerate HTML locally (value-only snapshot allowed if backfill active).
+5. Update docs/runbooks when workflows change (README + relevant files).
+6. Provide summary, validation commands, and next steps in final response.
+
+## 6. Git Worktree Management
+(unchanged, but crucial for multi-branch workflows.)
 
 This project uses **git worktrees** to work on multiple branches simultaneously. Each worktree is a separate working directory with its own branch checkout.
 
