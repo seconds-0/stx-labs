@@ -57,10 +57,16 @@ This command:
   the DuckDB file and skip `ensure_transaction_history`, e.g.:
 
   ```bash
-  python scripts/build_dashboards.py --value-only --wallet-db-snapshot --wallet-max-days 365
+  python scripts/build_dashboards.py --value-only --wallet-db-snapshot --wallet-max-days 365 --cpa-target-stx 5
   ```
 
   The snapshot is deleted automatically after the run.
+- **CPA Target:** `--cpa-target-stx` controls the payback panel threshold (default 5 STX).
+- **Dashboard Content:** The value dashboard now surfaces:
+  - KPI header (30d NV, WALTV stats, funded→value conversion, PoX APY snapshot).
+  - Network trend (30d rolling NV vs fees).
+  - ROI/CPA panel with payback multiples vs configured target.
+  - PoX linkage chart/table showing miner BTC commits vs APY.
 
 ---
 

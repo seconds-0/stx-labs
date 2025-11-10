@@ -54,7 +54,8 @@ Use the snapshot options:
 python scripts/build_dashboards.py --value-only --wallet-db-snapshot
 ```
 
-This copies `wallet_metrics.duckdb` to a temp file, skips the history sync, and
+Add `--cpa-target-stx 5` (or any target) to tune the new ROI panel. The script
+copies `wallet_metrics.duckdb` to a temp file, skips the history sync, and
 cleans up automatically.
 
 ## Documentation Map

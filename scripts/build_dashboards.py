@@ -24,6 +24,7 @@ from src import wallet_metrics
 from src import macro_data
 from src import prices
 from src import wallet_value
+from src import pox_yields
 
 
 def _write_html(output_path: Path, title: str, sections: Iterable[str]) -> None:
@@ -47,6 +48,11 @@ def _write_html(output_path: Path, title: str, sections: Iterable[str]) -> None:
             "    tr:nth-child(even) { background: #161b2e; }",
             "    .section { margin-bottom: 3rem; }",
             "    .note { font-size: 0.9rem; color: #b5bfd9; margin-top: -1rem; margin-bottom: 1.5rem; }",
+            "    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }",
+            "    .kpi-card { background: #161b2e; padding: 1rem; border-radius: 8px; border: 1px solid #2f354a; }",
+            "    .kpi-label { text-transform: uppercase; font-size: 0.75rem; color: #7f8bb3; letter-spacing: 0.05em; }",
+            "    .kpi-value { font-size: 1.5rem; margin-top: 0.25rem; color: #f5f6fa; }",
+            "    .kpi-subtext { font-size: 0.85rem; color: #7f8bb3; margin-top: 0.25rem; }",
             "  </style>",
             "</head>",
             "<body>",
@@ -593,12 +599,9 @@ def build_value_dashboard(
     force_refresh: bool,
     wallet_db_path: Path | None = None,
     skip_history_sync: bool = False,
+    cpa_target_stx: float = 5.0,
 ) -> None:
-    """Generate CPI/CPA-style wallet value dashboard.
-
-    Uses NV (fee-denominated revenue) as base unit; WALTV currently equals NV
-    until derived value and incentives data sources are integrated.
-    """
+    """Generate CPI/CPA-style wallet value dashboard with PoX linkage."""
     data = wallet_value.compute_value_pipeline(
         max_days=max_days,
         windows=windows,
@@ -608,6 +611,37 @@ def build_value_dashboard(
     )
     windows_df = data["windows"]
     cls = data["classification"]
+    activity_df = data["activity"]
+    daily_activity = wallet_value.compute_network_daily(activity_df)
+    kpis = wallet_value.summarize_value_kpis(
+        daily_activity=daily_activity,
+        windows_agg=windows_df,
+        classification=cls,
+        lookback_days=30,
+    )
+    cpa_panel = wallet_value.compute_cpa_panel(
+        windows_df,
+        window_days=30,
+        cpa_target_stx=cpa_target_stx,
+        min_wallets=3,
+    )
+
+    pox_summary = pox_yields.get_cycle_yield_summary(
+        last_n_cycles=8, force_refresh=force_refresh
+    )
+    cycles_df = pox_yields.fetch_pox_cycles_data(force_refresh=force_refresh)
+    rewards_df = pox_yields.aggregate_rewards_by_cycle(force_refresh=force_refresh)
+    cycle_apy_df = pox_yields.calculate_cycle_apy(cycles_df, rewards_df)
+    recent_cycles = (
+        cycle_apy_df.sort_values("cycle_number", ascending=False)
+        .head(8)
+        .sort_values("cycle_number")
+        if not cycle_apy_df.empty
+        else pd.DataFrame()
+    )
+    if not recent_cycles.empty:
+        recent_cycles = recent_cycles.copy()
+        recent_cycles["total_btc_btc"] = recent_cycles["total_btc_sats"] / 1e8
 
     sections: list[str] = []
     sections.append("<div class='section'>")
@@ -619,13 +653,39 @@ def build_value_dashboard(
         f"Updated {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}.</p>"
     )
 
-    # Summary across windows
+    def _fmt(value: float | None, suffix: str = "") -> str:
+        if value is None:
+            return "—"
+        if abs(value) >= 1:
+            return f"{value:,.1f}{suffix}"
+        return f"{value:.4f}{suffix}"
+
+    sections.append("<div class='section'>")
+    sections.append("<div class='kpi-grid'>")
+    sections.append(
+        f"<div class='kpi-card'><div class='kpi-label'>30d Network Value</div><div class='kpi-value'>{_fmt(kpis['total_nv_btc'], ' BTC')}</div><div class='kpi-subtext'>{_fmt(kpis['total_fee_stx'], ' STX fees')}</div></div>"
+    )
+    sections.append(
+        f"<div class='kpi-card'><div class='kpi-label'>Avg WALTV-30</div><div class='kpi-value'>{_fmt(kpis['avg_waltv_stx'], ' STX')}</div><div class='kpi-subtext'>Median {_fmt(kpis['median_waltv_stx'], ' STX')}</div></div>"
+    )
+    sections.append(
+        f"<div class='kpi-card'><div class='kpi-label'>Funded → Value</div><div class='kpi-value'>{_fmt(kpis['value_pct'], '%')}</div><div class='kpi-subtext'>Active {_fmt(kpis['active_pct'], '%')} | Funded {kpis['funded_wallets']}</div></div>"
+    )
+    sections.append(
+        f"<div class='kpi-card'><div class='kpi-label'>Value Wallets (30d)</div><div class='kpi-value'>{kpis['value_wallets']}</div><div class='kpi-subtext'>Active {kpis['active_wallets']}</div></div>"
+    )
+    if pox_summary.get("apy_btc_median") is not None:
+        sections.append(
+            f"<div class='kpi-card'><div class='kpi-label'>PoX APY (median)</div><div class='kpi-value'>{pox_summary['apy_btc_median']}%</div><div class='kpi-subtext'>Participation {pox_summary.get('participation_rate_mean', '—')}%</div></div>"
+        )
+    sections.append("</div>")
+    sections.append("</div>")
+
+    # Funnel summary
     summary_rows: list[dict[str, object]] = []
     if not cls.empty:
-        # Only consider activation cohorts in the analysis horizon
         cls_tmp = cls.copy()
         cls_tmp["activation_date"] = pd.to_datetime(cls_tmp["activation_date"], utc=True)
-
         today = pd.Timestamp.now(tz=UTC).floor("D")
         for w in windows:
             start_ts = today - pd.Timedelta(days=w - 1)
@@ -646,13 +706,162 @@ def build_value_dashboard(
                     "Value/Funded %": (value / funded * 100) if funded else None,
                 }
             )
-
     summary_table = (
         pd.DataFrame(summary_rows).to_html(index=False) if summary_rows else "<p>No data.</p>"
     )
+    sections.append("<div class='section'>")
     sections.append("<h2>Funnel Summary</h2>")
     sections.append(summary_table)
     sections.append("</div>")
+
+    # Network trend
+    if not daily_activity.empty:
+        trend = daily_activity.sort_values("activity_date").copy()
+        trend["nv_btc_roll30"] = trend["nv_btc_sum"].rolling(window=30, min_periods=7).sum()
+        trend["fee_stx_roll30"] = trend["fee_stx_sum"].rolling(window=30, min_periods=7).sum()
+        trend_fig = go.Figure()
+        trend_fig.add_trace(
+            go.Scatter(
+                x=trend["activity_date"],
+                y=trend["nv_btc_roll30"],
+                mode="lines",
+                name="30d NV (BTC)",
+                line=dict(color="#70e1ff", width=3),
+            )
+        )
+        trend_fig.add_trace(
+            go.Scatter(
+                x=trend["activity_date"],
+                y=trend["fee_stx_roll30"],
+                mode="lines",
+                name="30d Fees (STX)",
+                line=dict(color="#ffaf40", width=2, dash="dot"),
+                yaxis="y2",
+            )
+        )
+        trend_fig.update_layout(
+            title="Network Value vs Fees (30d rolling)",
+            xaxis_title="Date",
+            yaxis_title="NV (BTC)",
+            yaxis2=dict(
+                title="Fees (STX)",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+            ),
+            template="plotly_dark",
+            hovermode="x unified",
+        )
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>Network Activity Trend</h2>",
+                pio.to_html(trend_fig, include_plotlyjs="cdn", full_html=False),
+                "</div>",
+            ]
+        )
+
+    # CPA / ROI panel
+    if not cpa_panel.empty:
+        cpa_fig = px.line(
+            cpa_panel,
+            x="activation_date",
+            y="payback_multiple",
+            title="Payback Multiple vs Target",
+            labels={"activation_date": "Activation Date", "payback_multiple": "Avg WALTV / CPA Target"},
+            template="plotly_dark",
+        )
+        cpa_fig.add_hline(y=1.0, line_dash="dash", line_color="#ffaf40", annotation_text="Target payback")
+        cpa_table = cpa_panel.copy()
+        cpa_table["activation_date"] = cpa_table["activation_date"].dt.strftime("%Y-%m-%d")
+        cpa_table = cpa_table.rename(
+            columns={
+                "avg_waltv_stx": "Avg WALTV-30 (STX)",
+                "median_waltv_stx": "Median WALTV-30 (STX)",
+                "wallets": "Wallets",
+                "payback_multiple": "Payback Multiple",
+                "above_target": "≥ Target",
+            }
+        )
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>ROI & CPA Signal</h2>",
+                f"<p class='note'>Target CPA: {cpa_target_stx} STX. Payback multiple compares WALTV-30 to the target.</p>",
+                pio.to_html(cpa_fig, include_plotlyjs="cdn", full_html=False),
+                cpa_table.to_html(index=False),
+                "</div>",
+            ]
+        )
+
+    # PoX linkage
+    pox_summary_text = (
+        f"Median PoX APY across the last {pox_summary.get('cycles_analyzed', 0)} cycles is "
+        f"{pox_summary.get('apy_btc_median', '—')}% with average participation "
+        f"{pox_summary.get('participation_rate_mean', '—')}%."
+        if pox_summary.get("cycles_analyzed", 0)
+        else "PoX cycle data unavailable."
+    )
+    if not recent_cycles.empty:
+        pox_fig = go.Figure()
+        pox_fig.add_trace(
+            go.Bar(
+                x=recent_cycles["cycle_number"],
+                y=recent_cycles["total_btc_btc"],
+                name="Miner BTC Commit (BTC)",
+                marker_color="#70e1ff",
+            )
+        )
+        pox_fig.add_trace(
+            go.Scatter(
+                x=recent_cycles["cycle_number"],
+                y=recent_cycles["apy_btc"],
+                name="PoX APY (%)",
+                mode="lines+markers",
+                yaxis="y2",
+                line=dict(color="#ffaf40", width=3),
+            )
+        )
+        pox_fig.update_layout(
+            title="Miner BTC Commit vs PoX APY (recent cycles)",
+            xaxis_title="PoX Cycle",
+            yaxis_title="BTC Committed",
+            yaxis2=dict(
+                title="APY (%)",
+                overlaying="y",
+                side="right",
+            ),
+            template="plotly_dark",
+        )
+        pox_table = recent_cycles[
+            ["cycle_number", "total_btc_btc", "apy_btc", "participation_rate_pct"]
+        ].rename(
+            columns={
+                "cycle_number": "Cycle",
+                "total_btc_btc": "BTC Commit",
+                "apy_btc": "APY (%)",
+                "participation_rate_pct": "Participation (%)",
+            }
+        )
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>PoX Linkage</h2>",
+                f"<p class='note'>{pox_summary_text}</p>",
+                pio.to_html(pox_fig, include_plotlyjs="cdn", full_html=False),
+                pox_table.to_html(index=False),
+                "</div>",
+            ]
+        )
+    else:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>PoX Linkage</h2>",
+                f"<p class='note'>{pox_summary_text}</p>",
+                "</div>",
+            ]
+        )
 
     # Distribution of fee contribution per wallet (30d)
     if not windows_df.empty:
@@ -765,6 +974,12 @@ def main() -> None:
         action="store_true",
         help="Skip ensure_transaction_history (useful when pointing at snapshots).",
     )
+    parser.add_argument(
+        "--cpa-target-stx",
+        type=float,
+        default=5.0,
+        help="Target STX WALTV for CPA payback comparisons.",
+    )
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -807,6 +1022,7 @@ def main() -> None:
             force_refresh=args.force_refresh,
             wallet_db_path=wallet_db_path,
             skip_history_sync=skip_history_sync,
+            cpa_target_stx=args.cpa_target_stx,
         )
 
         if not args.value_only:
