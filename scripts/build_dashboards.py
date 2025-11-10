@@ -620,9 +620,9 @@ def build_value_dashboard(
         cls_tmp = cls.copy()
         cls_tmp["activation_date"] = pd.to_datetime(cls_tmp["activation_date"], utc=True)
 
+        today = pd.Timestamp.now(tz=UTC).floor("D")
         for w in windows:
-            start_date = (datetime.now(tz=UTC).date() - pd.Timedelta(days=w - 1)).to_pydatetime()
-            start_ts = pd.Timestamp(start_date, tz=UTC).floor("D")
+            start_ts = today - pd.Timedelta(days=w - 1)
             cohort = cls_tmp[cls_tmp["activation_date"] >= start_ts]
             total = int(len(cohort))
             funded = int(cohort["funded"].sum()) if not cohort.empty else 0
