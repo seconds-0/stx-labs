@@ -3,11 +3,13 @@ __pycache__/
 .ipynb_checkpoints/
 .pytest_cache/
 .beads/daemon.*
+node_modules/
 data/raw/
 data/cache/
 out/
 *.pyc
 .env
+.env.local
 .DS_Store
 public/
 .vercel
