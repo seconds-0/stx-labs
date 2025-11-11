@@ -1,4 +1,4 @@
-.PHONY: setup lab test notebook smoke-notebook notebook-bg notebook-status notebook-tail notebook-stop refresh-prices notebook-macro notebook-macro-bg lint clean backfill-wallet backfill-status backfill-bg backfill-stop
+.PHONY: setup lab test notebook smoke-notebook notebook-bg notebook-status notebook-tail notebook-stop refresh-prices notebook-macro notebook-macro-bg lint clean backfill-wallet backfill-status backfill-bg backfill-stop backfill-tmux backfill-tmux-start backfill-tmux-attach backfill-tmux-stop backfill-tmux-status backfill-tmux-logs backfill-health
 
 VENV?=.venv
 PYTHON?=$(VENV)/bin/python
@@ -88,7 +88,9 @@ clean:
 # Wallet transaction history backfill targets
 BACKFILL_LOG?=out/backfill.log
 BACKFILL_PID?=out/backfill.pid
-TARGET_DAYS?=180
+TARGET_DAYS?=365
+MAX_PAGES?=5000
+MAX_ITERATIONS?=0
 
 backfill-wallet:
 	$(PYTHON) scripts/backfill_wallet_history.py --target-days $(TARGET_DAYS) --max-pages 2000
@@ -127,3 +129,36 @@ backfill-stop:
 	else \
 		echo "No backfill PID file found (expected at $(BACKFILL_PID))"; \
 	fi
+
+# Tmux-based backfill targets (uninterruptible, SSH-persistent)
+backfill-tmux:
+	@echo "Starting/attaching to uninterruptible backfill session..."
+	@echo "Target: $(TARGET_DAYS) days | Max pages: $(MAX_PAGES) | Max iterations: $(MAX_ITERATIONS) (0=infinite)"
+	@echo ""
+	TARGET_DAYS=$(TARGET_DAYS) MAX_PAGES=$(MAX_PAGES) MAX_ITERATIONS=$(MAX_ITERATIONS) ./scripts/backfill_tmux.sh
+
+backfill-tmux-start:
+	@echo "Creating NEW tmux session for backfill..."
+	@echo "Target: $(TARGET_DAYS) days | Max pages: $(MAX_PAGES) | Max iterations: $(MAX_ITERATIONS)"
+	@echo ""
+	TARGET_DAYS=$(TARGET_DAYS) MAX_PAGES=$(MAX_PAGES) MAX_ITERATIONS=$(MAX_ITERATIONS) ./scripts/backfill_tmux.sh start
+
+backfill-tmux-attach:
+	@echo "Attaching to existing tmux session..."
+	./scripts/backfill_tmux.sh attach
+
+backfill-tmux-stop:
+	@echo "Stopping tmux backfill session..."
+	./scripts/backfill_tmux.sh stop
+
+backfill-tmux-status:
+	@./scripts/backfill_tmux.sh status
+
+backfill-tmux-logs:
+	@echo "Recent backfill logs (Ctrl+C to stop):"
+	@echo "================================================================================"
+	@tail -30 $(BACKFILL_LOG) 2>/dev/null || echo "No logs found at $(BACKFILL_LOG)"
+
+backfill-health:
+	@echo "Running health check..."
+	@./scripts/backfill_health_check.sh --target-days $(TARGET_DAYS)

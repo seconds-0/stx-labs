@@ -54,6 +54,7 @@ Conclusion
 - Classification uses cached Hiro balances for funded flag; cap lookups to avoid heavy API usage.
 - WALTV v1 equals fee-denominated NV; derived value and incentives are planned extensions.
 - Everything is delta-friendly: HTTP + parquet + DuckDB caches avoid re-pulling historical data.
+ - Trailing windows: the dashboard also computes calendar-anchored Last‑30/60/90 per-wallet fee/NV aggregates, shown alongside WALTV‑30/60/90 (activation-anchored) to compare “first N days” vs “most recent N days”.
 
 ### Runbook
 Prereqs
@@ -106,4 +107,3 @@ A. It’s intentionally straightforward:
 - Light extension to `hiro.py` for balances.
 - One additional dashboard function.
 - WALTV v1 = NV to avoid premature complexity; derived/incentives are planned separately.
-

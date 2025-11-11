@@ -60,8 +60,8 @@ def _ensure_ns_timestamp(series: pd.Series) -> pd.Series:
     else:
         if getattr(series.dtype, "tz", None) is None:
             series = pd.to_datetime(series, utc=True)
-    values = series.astype("int64", copy=False)
-    return pd.to_datetime(values, utc=True)
+    # Convert to nanosecond precision while preserving the actual datetime value
+    return series.dt.as_unit("ns")
 
 
 def compute_activation(first_seen: pd.DataFrame) -> pd.DataFrame:
@@ -105,6 +105,13 @@ def _enrich_activity_with_prices(
     df = activity.copy()
     df["block_time"] = _ensure_ns_timestamp(df["block_time"])
     price_panel = price_panel.copy()
+    if "stx_btc" not in price_panel.columns:
+        if {"stx_usd", "btc_usd"}.issubset(price_panel.columns):
+            price_panel["stx_btc"] = price_panel["stx_usd"].astype(float) / price_panel[
+                "btc_usd"
+            ].astype(float)
+        else:
+            price_panel["stx_btc"] = pd.NA
     price_panel["ts"] = _ensure_ns_timestamp(price_panel["ts"])
     df = pd.merge_asof(
         df.sort_values("block_time"),
@@ -114,6 +121,8 @@ def _enrich_activity_with_prices(
         direction="nearest",
     )
     df = df.drop(columns=["ts"]) if "ts" in df else df
+    if "stx_btc" not in df.columns:
+        df["stx_btc"] = 0.0
     df["fee_stx"] = df["fee_ustx"].astype(float) / MICROSTX_PER_STX
     # If price is missing, NV contribution is unknown; treat as 0 and flag could be added
     df["stx_btc"] = df["stx_btc"].astype(float)
@@ -198,6 +207,80 @@ def compute_wallet_windows(
         )
     out = pd.concat(results, ignore_index=True)
     # Ensure types
+    out["tx_count"] = out["tx_count"].astype(int)
+    out["fee_stx_sum"] = out["fee_stx_sum"].astype(float)
+    out["nv_btc_sum"] = out["nv_btc_sum"].astype(float)
+    out["window_days"] = out["window_days"].astype(int)
+    return out
+
+
+def compute_trailing_wallet_windows(
+    activity: pd.DataFrame,
+    price_panel: pd.DataFrame,
+    *,
+    windows: Sequence[int] = (30, 60, 90),
+    as_of: datetime | None = None,
+) -> pd.DataFrame:
+    """Compute trailing per-wallet value over the last N days (calendar-anchored).
+
+    This differs from activation windows, which measure the first N days after
+    activation. Trailing windows reflect the most recent activity regardless of
+    activation date.
+
+    Returns rows per (address, window_days):
+      - tx_count, fee_stx_sum, nv_btc_sum
+    """
+    if activity.empty:
+        return pd.DataFrame(
+            columns=[
+                "address",
+                "window_days",
+                "tx_count",
+                "fee_stx_sum",
+                "nv_btc_sum",
+            ]
+        )
+
+    # Normalize timestamps and join prices once
+    enriched = _enrich_activity_with_prices(activity, price_panel)
+    enriched = enriched.copy()
+    enriched["block_time"] = pd.to_datetime(enriched["block_time"], utc=True)
+
+    if as_of is None:
+        as_of = datetime.now(UTC)
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=UTC)
+
+    results: list[pd.DataFrame] = []
+    for w in sorted(set(int(x) for x in windows if x > 0)):
+        start = as_of - timedelta(days=w)
+        window_slice = enriched[(enriched["block_time"] >= start) & (enriched["block_time"] < as_of)]
+        if window_slice.empty:
+            continue
+        agg = (
+            window_slice.groupby(["address"])[["tx_id", "fee_stx", "nv_btc"]]
+            .agg(
+                tx_count=("tx_id", "count"),
+                fee_stx_sum=("fee_stx", "sum"),
+                nv_btc_sum=("nv_btc", "sum"),
+            )
+            .reset_index()
+        )
+        agg["window_days"] = w
+        results.append(agg)
+
+    if not results:
+        return pd.DataFrame(
+            columns=[
+                "address",
+                "window_days",
+                "tx_count",
+                "fee_stx_sum",
+                "nv_btc_sum",
+            ]
+        )
+
+    out = pd.concat(results, ignore_index=True)
     out["tx_count"] = out["tx_count"].astype(int)
     out["fee_stx_sum"] = out["fee_stx_sum"].astype(float)
     out["nv_btc_sum"] = out["nv_btc_sum"].astype(float)
@@ -442,6 +525,46 @@ def summarize_window_stats(
         "wallets": wallets,
         "avg_waltv_stx": avg,
         "median_waltv_stx": median,
+        "nv_btc_sum": nv_btc,
+        "fee_stx_sum": fee_sum,
+    }
+
+
+def summarize_trailing_window_stats(
+    trailing_agg: pd.DataFrame,
+    *,
+    window_days: int,
+) -> dict[str, float | int]:
+    """Return aggregate stats for trailing window data (calendar-anchored)."""
+    if trailing_agg.empty:
+        return {
+            "window_days": window_days,
+            "wallets": 0,
+            "avg_last_stx": 0.0,
+            "median_last_stx": 0.0,
+            "nv_btc_sum": 0.0,
+            "fee_stx_sum": 0.0,
+        }
+    df = trailing_agg[trailing_agg["window_days"] == window_days]
+    if df.empty:
+        return {
+            "window_days": window_days,
+            "wallets": 0,
+            "avg_last_stx": 0.0,
+            "median_last_stx": 0.0,
+            "nv_btc_sum": 0.0,
+            "fee_stx_sum": 0.0,
+        }
+    avg = float(df["fee_stx_sum"].mean())
+    median = float(df["fee_stx_sum"].median())
+    wallets = int(len(df))
+    nv_btc = float(df["nv_btc_sum"].mean()) if "nv_btc_sum" in df else 0.0
+    fee_sum = float(df["fee_stx_sum"].sum())
+    return {
+        "window_days": window_days,
+        "wallets": wallets,
+        "avg_last_stx": avg,
+        "median_last_stx": median,
         "nv_btc_sum": nv_btc,
         "fee_stx_sum": fee_sum,
     }

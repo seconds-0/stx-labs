@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src import macro_analysis
 from src import macro_data
 from src import pox_yields
 from src import prices
@@ -31,9 +33,199 @@ LOGGER = logging.getLogger(__name__)
 SUPPORTED_ROI_WINDOWS: tuple[int, ...] = (30, 60, 90)
 
 
-def _write_html(output_path: Path, title: str, sections: Iterable[str]) -> None:
+NAV_LINKS: list[tuple[str, str, str]] = [
+    ("wallet", "Wallet", "/wallet/index.html"),
+    ("value", "Value", "/value/index.html"),
+    ("macro", "Macro", "/macro/index.html"),
+    ("coinbase", "Coinbase", "/coinbase/index.html"),
+    ("coinbase_replacement", "Coinbase Replacement", "/coinbase_replacement/index.html"),
+    ("scenarios", "Scenarios", "/scenarios/index.html"),
+]
+
+BODY_RE = re.compile(r"<body[^>]*>(?P<body>.*)</body>", re.S | re.I)
+STYLE_RE = re.compile(r"<style[^>]*>.*?</style>", re.S | re.I)
+
+COINBASE_CALC_STYLE = """
+<style>
+.coinbase-wrapper {
+  max-width: 960px;
+  margin: 0 auto;
+  background: #161b2e;
+  border: 1px solid #2f354a;
+  border-radius: 12px;
+  padding: 2rem;
+  color: #f5f6fa;
+}
+.coinbase-wrapper h1,
+.coinbase-wrapper h2,
+.coinbase-wrapper h3 {
+  color: #70e1ff;
+}
+.coinbase-wrapper .subtitle {
+  color: #b5bfd9;
+  margin-bottom: 1.5rem;
+}
+.coinbase-wrapper .baseline {
+  background: #101522;
+  border-left: 4px solid #70e1ff;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+.coinbase-wrapper .baseline-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.coinbase-wrapper .baseline-stat {
+  color: #b5bfd9;
+  font-size: 0.9rem;
+}
+.coinbase-wrapper .baseline-stat strong {
+  font-size: 1.25rem;
+  color: #f5f6fa;
+}
+.coinbase-wrapper .presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+.coinbase-wrapper .preset-btn {
+  flex: 1;
+  min-width: 140px;
+  padding: 0.9rem 1.2rem;
+  border-radius: 8px;
+  border: 1px solid #2f354a;
+  background: linear-gradient(135deg, #1f2840, #101522);
+  color: #f5f6fa;
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.coinbase-wrapper .preset-btn:hover {
+  border-color: #70e1ff;
+  transform: translateY(-1px);
+}
+.coinbase-wrapper .preset-btn .target {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+.coinbase-wrapper .preset-btn .desc {
+  color: #b5bfd9;
+  font-size: 0.8rem;
+}
+.coinbase-wrapper .slider-group {
+  margin-bottom: 1.75rem;
+}
+.coinbase-wrapper .slider-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+  color: #b5bfd9;
+}
+.coinbase-wrapper .slider-value {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: #70e1ff;
+  border: 1px solid #2f354a;
+  border-radius: 6px;
+  padding: 0.2rem 0.6rem;
+  background: #101522;
+}
+.coinbase-wrapper input[type="range"] {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #2f354a;
+}
+.coinbase-wrapper input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #70e1ff;
+  border: 2px solid #101522;
+}
+.coinbase-wrapper .results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+.coinbase-wrapper .result-card {
+  background: #101522;
+  border: 1px solid #2f354a;
+  border-radius: 10px;
+  padding: 1rem;
+  text-align: center;
+}
+.coinbase-wrapper .result-value {
+  font-size: 2rem;
+  font-weight: 600;
+  color: #70e1ff;
+}
+.coinbase-wrapper .result-label {
+  color: #b5bfd9;
+  font-size: 0.9rem;
+  margin-top: 0.4rem;
+}
+.coinbase-wrapper .efficiency {
+  color: #f5f6fa;
+  font-size: 0.95rem;
+  margin-bottom: 1rem;
+}
+.coinbase-wrapper .efficiency strong {
+  color: #70e1ff;
+}
+.coinbase-wrapper .notes {
+  color: #b5bfd9;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.coinbase-wrapper .notes li {
+  margin-left: 1.2rem;
+  margin-bottom: 0.4rem;
+}
+@media (max-width: 600px) {
+  .coinbase-wrapper {
+    padding: 1.25rem;
+  }
+  .coinbase-wrapper .slider-label {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+  }
+}
+</style>
+"""
+
+PLOTLY_EMBED_STYLE = """
+<style>
+.plotly-embed {
+  background: #161b2e;
+  border: 1px solid #2f354a;
+  border-radius: 12px;
+  padding: 1.5rem;
+  overflow: auto;
+}
+</style>
+"""
+
+
+def _write_html(
+    output_path: Path,
+    title: str,
+    sections: Iterable[str],
+    *,
+    active_nav: str | None = None,
+    last_updated: datetime | None = None,
+) -> None:
     """Wrap the provided HTML snippets in a basic document and write to disk."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = (last_updated or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M %Z")
     html = "\n".join(
         [
             "<!DOCTYPE html>",
@@ -46,6 +238,10 @@ def _write_html(output_path: Path, title: str, sections: Iterable[str]) -> None:
             "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; margin: 0 auto; padding: 2rem; max-width: 1100px; background: #101522; color: #f5f6fa; }",
             "    h1, h2 { color: #70e1ff; }",
             "    a { color: #70e1ff; }",
+            "    .topnav { position: sticky; top: 0; z-index: 10; background: #0f1420; border-bottom: 1px solid #2f354a; margin: -2rem -2rem 1rem -2rem; padding: 0.75rem 2rem; }",
+            "    .topnav a { margin-right: 1rem; color: #b5bfd9; text-decoration: none; font-size: 0.95rem; }",
+            "    .topnav a:hover, .topnav a.active { color: #70e1ff; text-decoration: underline; }",
+            "    .last-updated { font-size: 0.85rem; color: #7681a1; margin-bottom: 1.5rem; }",
             "    table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }",
             "    th, td { border: 1px solid #2f354a; padding: 0.5rem 0.75rem; text-align: left; }",
             "    th { background: #1f2840; }",
@@ -60,6 +256,16 @@ def _write_html(output_path: Path, title: str, sections: Iterable[str]) -> None:
             "  </style>",
             "</head>",
             "<body>",
+            "<div class='topnav'>",
+            "  <strong style='margin-right: 1rem; color:#f5f6fa;'>Stacks Analytics</strong>",
+        ]
+        + [
+            f"  <a href='{href}'{' class=\"active\"' if active_nav == key else ''}>{label}</a>"
+            for key, label, href in NAV_LINKS
+        ]
+        + [
+            "</div>",
+            f"<div class='last-updated'>Last updated {stamp}</div>",
             *sections,
             "</body>",
             "</html>",
@@ -69,20 +275,68 @@ def _write_html(output_path: Path, title: str, sections: Iterable[str]) -> None:
     print(f"Wrote {output_path}")
 
 
+def _extract_body_html(document: str) -> str:
+    match = BODY_RE.search(document)
+    content = match.group("body") if match else document
+    return content.strip()
+
+
+def _write_static_page(
+    *,
+    source_html: str,
+    output_path: Path,
+    title: str,
+    active_nav: str,
+    custom_style: str | None = None,
+    wrapper_class: str | None = None,
+    strip_existing_styles: bool = True,
+) -> None:
+    content = _extract_body_html(source_html)
+    if strip_existing_styles:
+        content = STYLE_RE.sub("", content)
+    if wrapper_class:
+        content = f"<div class='{wrapper_class}'>{content}</div>"
+    sections: list[str] = []
+    if custom_style:
+        sections.append(custom_style)
+    sections.extend(
+        [
+            "<div class='section'>",
+            content,
+            "</div>",
+        ]
+    )
+    _write_html(
+        output_path,
+        title,
+        sections,
+        active_nav=active_nav,
+        last_updated=datetime.now(UTC),
+    )
+
+
 def build_wallet_dashboard(
     *,
     output_path: Path,
     max_days: int,
     windows: Sequence[int],
     force_refresh: bool,
+    wallet_db_path: Path | None = None,
+    skip_history_sync: bool = False,
+    last_updated: datetime | None = None,
 ) -> None:
     """Generate the wallet growth dashboard HTML using cached Hiro transactions."""
-    wallet_metrics.ensure_transaction_history(
-        max_days=max_days,
-        force_refresh=force_refresh,
-    )
+    generated_at = last_updated or datetime.now(UTC)
+    if not skip_history_sync:
+        wallet_metrics.ensure_transaction_history(
+            max_days=max_days,
+            force_refresh=force_refresh,
+        )
 
-    activity = wallet_metrics.load_recent_wallet_activity(max_days=max_days)
+    activity = wallet_metrics.load_recent_wallet_activity(
+        max_days=max_days,
+        db_path=wallet_db_path,
+    )
     first_seen = wallet_metrics.update_first_seen_cache(activity)
     retention = wallet_metrics.compute_retention(
         activity,
@@ -310,11 +564,19 @@ def build_wallet_dashboard(
         fig_fee.update_layout(height=520)
         fee_html = pio.to_html(fig_fee, include_plotlyjs="cdn", full_html=False)
 
+    thr = wallet_value.ClassificationThresholds()
     sections = [
         "<div class='section'>",
         "<h1>Stacks Wallet Growth Dashboard</h1>",
         "<p class='note'>Derived from Hiro canonical transactions, cached locally. Updated "
-        f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}.</p>",
+        f"{generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>",
+        (
+            "<div class='note'><strong>Definitions:</strong> "
+            "Active wallets (this page): unique addresses with any transaction activity in the selected trailing window. "
+            f"Classification (value module): Funded ≥ {thr.funded_stx_min:g} STX balance; "
+            f"Active ≥ {thr.active_min_tx_30d} tx in first 30 days; "
+            f"Value WALTV-30 ≥ {thr.value_min_fee_stx_30d:g} STX fees.</div>"
+        ),
         "<h2>Window Summary</h2>",
         metric_definitions,
         summary_table_html,
@@ -335,7 +597,13 @@ def build_wallet_dashboard(
     if not trend_html and not retention_html and not fee_html:
         sections.append("<p>No wallet activity available for the requested windows.</p>")
 
-    _write_html(output_path, "Stacks Wallet Growth Dashboard", sections)
+    _write_html(
+        output_path,
+        "Stacks Wallet Growth Dashboard",
+        sections,
+        active_nav="wallet",
+        last_updated=generated_at,
+    )
 
 
 def build_macro_dashboard(
@@ -345,6 +613,7 @@ def build_macro_dashboard(
     force_refresh: bool,
 ) -> None:
     """Generate an HTML dashboard covering macro indicators."""
+    generated_at = datetime.now(UTC)
     end_date = datetime.now(tz=UTC).date()
     start_date = end_date - timedelta(days=history_days)
     start_str = start_date.isoformat()
@@ -373,6 +642,13 @@ def build_macro_dashboard(
         price_panel = fresh
     except Exception as exc:  # pragma: no cover - capture runtime issues
         price_fetch_errors.append(str(exc))
+
+    correlation_panel = macro_analysis.build_macro_correlation_panel(
+        start_str, end_str, force_refresh=force_refresh
+    )
+    correlation_summary = macro_analysis.summarize_indicator_correlations(
+        correlation_panel, max_lag_days=14
+    )
 
     last_rows = []
     if not sp500.empty:
@@ -431,7 +707,7 @@ def build_macro_dashboard(
         "<div class='section'>",
         "<h1>Stacks Macro Dashboard</h1>",
         "<p class='note'>Daily macro indicators from FRED, Yahoo Finance, and CoinGecko. "
-        f"History window: {start_str} → {end_str}.</p>",
+        f"History window: {start_str} → {end_str}. Generated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>",
     ]
     if price_fetch_errors:
         macro_sections.append(
@@ -440,6 +716,90 @@ def build_macro_dashboard(
             + "</p>"
         )
     macro_sections.extend(["<h2>Latest Snapshot</h2>", summary_table, "</div>"])
+
+    if not correlation_summary.empty:
+        display_cols = correlation_summary[
+            [
+                "label",
+                "pearson",
+                "spearman",
+                "best_lag_days",
+                "best_lag_correlation",
+                "latest_value",
+            ]
+        ].rename(
+            columns={
+                "label": "Indicator",
+                "pearson": "Pearson",
+                "spearman": "Spearman",
+                "best_lag_days": "Best Lag (days)",
+                "best_lag_correlation": "Lag Corr",
+                "latest_value": "Latest Value",
+            }
+        )
+        for col in ["Pearson", "Spearman", "Lag Corr"]:
+            display_cols[col] = display_cols[col].map(lambda x: f"{x:.3f}")
+        display_cols["Latest Value"] = display_cols["Latest Value"].map(
+            lambda x: f"{x:.3f}" if isinstance(x, (int, float)) else "—"
+        )
+        corr_table_html = display_cols.to_html(index=False, classes="summary-table")
+
+        heatmap_fig = go.Figure(
+            data=go.Heatmap(
+                z=[
+                    correlation_summary["pearson"].tolist(),
+                    correlation_summary["spearman"].tolist(),
+                ],
+                x=correlation_summary["label"].tolist(),
+                y=["Pearson", "Spearman"],
+                colorscale="RdBu",
+                zmin=-1,
+                zmax=1,
+                colorbar=dict(title="Correlation"),
+                text=[
+                    [f"{val:.2f}" for val in correlation_summary["pearson"]],
+                    [f"{val:.2f}" for val in correlation_summary["spearman"]],
+                ],
+                texttemplate="%{text}",
+            )
+        )
+        heatmap_fig.update_layout(
+            title="STX/BTC vs Indicator Correlations",
+            template="plotly_dark",
+            height=360,
+        )
+
+        macro_sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>STX/BTC Correlation Summary</h2>",
+                "<p class='note'>Correlations computed on overlapping dates; positive lag means the indicator leads STX/BTC by that many days.</p>",
+                corr_table_html,
+                pio.to_html(heatmap_fig, include_plotlyjs="cdn", full_html=False),
+            ]
+        )
+
+        # Highlight lead/lag profile for strongest indicator
+        top_indicator_row = correlation_summary.iloc[0]
+        lag_df = macro_analysis.compute_lagged_correlations(
+            correlation_panel,
+            feature=top_indicator_row["indicator"],
+            max_lag_days=14,
+        )
+        if not lag_df.empty:
+            lag_chart = px.line(
+                lag_df,
+                x="lag_days",
+                y="correlation",
+                title=f"Lead / Lag Correlation: {top_indicator_row['label']}",
+                labels={"lag_days": "Lag (days)", "correlation": "Correlation"},
+                template="plotly_dark",
+            )
+            lag_chart.add_hline(y=0, line_dash="dot", line_color="#888")
+            macro_sections.append(
+                pio.to_html(lag_chart, include_plotlyjs="cdn", full_html=False)
+            )
+        macro_sections.append("</div>")
 
     if not sp500.empty:
         sp500_plot = px.line(
@@ -531,23 +891,61 @@ def build_macro_dashboard(
             ["<div class='section'>", pio.to_html(stx_plot, include_plotlyjs="cdn", full_html=False), "</div>"]
         )
 
-    _write_html(output_path, "Stacks Macro Dashboard", macro_sections)
+    _write_html(
+        output_path,
+        "Stacks Macro Dashboard",
+        macro_sections,
+        active_nav="macro",
+        last_updated=generated_at,
+    )
 
 
 def copy_static_assets(public_dir: Path) -> None:
-    """Copy existing HTML assets (coinbase calculator, scenarios) into public site."""
+    """Copy and theme static HTML assets (coinbase calculator, scenarios) into public site."""
     public_dir.mkdir(parents=True, exist_ok=True)
-    assets = {
-        Path("out/coinbase_calculator.html"): public_dir / "coinbase" / "index.html",
-        Path("out/coinbase_replacement_roadmap.html"): public_dir / "coinbase_replacement" / "index.html",
-        Path("out/scenario_dashboard.html"): public_dir / "scenarios" / "index.html",
-    }
-    for src, dest in assets.items():
-        if not src.exists():
+    static_pages = [
+        {
+            "src": Path("out/coinbase_calculator.html"),
+            "dest": public_dir / "coinbase" / "index.html",
+            "title": "Coinbase Fee Calculator",
+            "active_nav": "coinbase",
+            "style": COINBASE_CALC_STYLE,
+            "wrapper": "coinbase-wrapper",
+        },
+        {
+            "src": Path("out/coinbase_replacement_roadmap.html"),
+            "dest": public_dir / "coinbase_replacement" / "index.html",
+            "title": "Coinbase Replacement Roadmap",
+            "active_nav": "coinbase_replacement",
+            "style": PLOTLY_EMBED_STYLE,
+            "wrapper": "plotly-embed",
+        },
+        {
+            "src": Path("out/scenario_dashboard.html"),
+            "dest": public_dir / "scenarios" / "index.html",
+            "title": "Scenario Sensitivity Dashboard",
+            "active_nav": "scenarios",
+            "style": PLOTLY_EMBED_STYLE,
+            "wrapper": "plotly-embed",
+        },
+    ]
+    for cfg in static_pages:
+        src_path = cfg["src"]
+        dest_path = cfg["dest"]
+        if not src_path.exists():
             continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-        print(f"Copied {src} -> {dest}")
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_html = src_path.read_text(encoding="utf-8")
+        _write_static_page(
+            source_html=raw_html,
+            output_path=dest_path,
+            title=cfg["title"],
+            active_nav=cfg["active_nav"],
+            custom_style=cfg.get("style"),
+            wrapper_class=cfg.get("wrapper"),
+            strip_existing_styles=cfg.get("strip_styles", True),
+        )
+        print(f"Themed {src_path} -> {dest_path}")
 
 
 def build_public_index(public_dir: Path) -> None:
@@ -555,43 +953,74 @@ def build_public_index(public_dir: Path) -> None:
     public_dir.mkdir(parents=True, exist_ok=True)
     index_path = public_dir / "index.html"
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    nav_links = "\n".join(
+        f'        <a data-key="{key}" data-href="{href}" href="{href}">{label}</a>'
+        for key, label, href in NAV_LINKS
+    )
     template = Template(
         """<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Stacks Analytics Dashboards</title>
+    <title>Stacks Analytics</title>
     <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #101522; color: #f5f6fa; margin: 0; padding: 3rem 1.5rem; display: flex; justify-content: center; }
-      .wrapper { max-width: 760px; width: 100%; }
-      h1 { color: #70e1ff; margin-bottom: 0.5rem; }
-      p { color: #b5bfd9; line-height: 1.6; }
-      ul { list-style: none; padding: 0; margin: 2rem 0; }
-      li { margin: 0.75rem 0; }
-      a { color: #70e1ff; font-size: 1.1rem; text-decoration: none; }
-      a:hover { text-decoration: underline; }
-      footer { margin-top: 3rem; font-size: 0.85rem; color: #7681a1; }
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #101522; color: #f5f6fa; margin: 0; min-height: 100vh; display: flex; }
+      .sidebar { width: 240px; background: #0f1420; border-right: 1px solid #2f354a; padding: 1.25rem; position: sticky; top: 0; height: 100vh; box-sizing: border-box; }
+      .sidebar h2 { color: #70e1ff; margin-top: 0; font-size: 1.1rem; }
+      .nav a { display: block; padding: 0.5rem 0.4rem; color: #b5bfd9; text-decoration: none; border-radius: 4px; }
+      .nav a:hover, .nav a.active { color: #70e1ff; background: #1a2034; }
+      .content { flex: 1; display: flex; flex-direction: column; }
+      .topbar { padding: 1rem 1.5rem; border-bottom: 1px solid #2f354a; }
+      .topbar p { margin: 0; color: #b5bfd9; }
+      iframe { flex: 1; border: none; width: 100%; background: #0f1420; }
+      footer { padding: 0.75rem 1.5rem; font-size: 0.85rem; color: #7681a1; border-top: 1px solid #2f354a; }
+      .open-link { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: #70e1ff; text-decoration: none; }
     </style>
   </head>
   <body>
-    <div class="wrapper">
-      <h1>Stacks Analytics Dashboards</h1>
-      <p>Interactive reports generated from the Stacks PoX flywheel toolkit.</p>
-      <ul>
-        <li><a href="/wallet/index.html">Wallet Growth Dashboard</a></li>
-        <li><a href="/macro/index.html">Macro Market Dashboard</a></li>
-        <li><a href="/coinbase/index.html">Coinbase Fee Calculator</a></li>
-        <li><a href="/coinbase_replacement/index.html">Coinbase Replacement Roadmap</a></li>
-        <li><a href="/scenarios/index.html">Scenario Sensitivity Dashboard</a></li>
-      </ul>
+    <aside class="sidebar">
+      <h2>Stacks Analytics</h2>
+      <nav class="nav">
+$nav_links
+      </nav>
+    </aside>
+    <div class="content">
+      <div class="topbar">
+        <p>Use the sidebar to switch dashboards or <a class="open-link" id="open-new" href="/wallet/index.html" target="_blank" rel="noreferrer">open current in new tab ↗</a></p>
+      </div>
+      <iframe id="dash-frame" src="/wallet/index.html" title="Stacks Analytics Dashboard"></iframe>
       <footer>Generated $stamp</footer>
     </div>
+    <script>
+      const links = Array.from(document.querySelectorAll('.nav a'));
+      const frame = document.getElementById('dash-frame');
+      const openLink = document.getElementById('open-new');
+      function activate(key, href, push = true) {
+        links.forEach((link) => link.classList.toggle('active', link.dataset.key === key));
+        if (frame.getAttribute('src') !== href) {
+          frame.setAttribute('src', href);
+        }
+        openLink.setAttribute('href', href);
+        if (push) {
+          history.replaceState(null, '', '#' + key);
+        }
+      }
+      links.forEach((link) => {
+        link.addEventListener('click', (event) => {
+          event.preventDefault();
+          activate(link.dataset.key, link.dataset.href);
+        });
+      });
+      const initialKey = window.location.hash ? window.location.hash.slice(1) : 'wallet';
+      const initialLink = links.find((link) => link.dataset.key === initialKey) || links[0];
+      activate(initialLink.dataset.key, initialLink.dataset.href, false);
+    </script>
   </body>
 </html>
 """
     )
-    index_path.write_text(template.substitute(stamp=stamp), encoding="utf-8")
+    index_path.write_text(template.substitute(stamp=stamp, nav_links=nav_links), encoding="utf-8")
     print(f"Wrote {index_path}")
 
 
@@ -606,6 +1035,7 @@ def build_value_dashboard(
     cpa_target_stx: float = 5.0,
 ) -> None:
     """Generate CPI/CPA-style wallet value dashboard with PoX linkage."""
+    generated_at = datetime.now(UTC)
     data = wallet_value.compute_value_pipeline(
         max_days=max_days,
         windows=windows,
@@ -639,6 +1069,24 @@ def build_value_dashboard(
                 windows_df, window_days=win
             )
 
+    # Compute trailing (calendar-anchored) wallet value stats for comparison
+    try:
+        price_panel = wallet_value.load_price_panel_for_activity(
+            activity_df, force_refresh=force_refresh
+        )
+    except Exception as exc:
+        LOGGER.warning("Price panel unavailable for trailing stats: %s", exc)
+        price_panel = pd.DataFrame(columns=["ts", "stx_btc"])
+
+    trailing_df = wallet_value.compute_trailing_wallet_windows(
+        activity_df, price_panel, windows=SUPPORTED_ROI_WINDOWS
+    )
+    trailing_stats: dict[int, dict[str, float | int]] = {}
+    for win in SUPPORTED_ROI_WINDOWS:
+        trailing_stats[win] = wallet_value.summarize_trailing_window_stats(
+            trailing_df, window_days=win
+        )
+
     try:
         pox_summary = pox_yields.get_cycle_yield_summary(
             last_n_cycles=8, force_refresh=force_refresh
@@ -669,7 +1117,17 @@ def build_value_dashboard(
         "<p class='note'>Network Value (NV) computed as STX fees converted to BTC using "
         "historical STX/BTC prices nearest to each transaction timestamp. "
         "WALTV currently equals NV (no incentives/derived added yet). "
-        f"Updated {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}.</p>"
+        f"Updated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>"
+    )
+    # Add classification definitions for clarity at the top of the page.
+    thr = wallet_value.ClassificationThresholds()
+    sections.append(
+        "<div class='note'>"
+        "<strong>Definitions:</strong> "
+        f"Funded Wallet: current STX balance ≥ {thr.funded_stx_min:g} STX. "
+        f"Active Wallet: ≥ {thr.active_min_tx_30d} tx in the first 30 days from activation. "
+        f"Value Wallet: WALTV-30 ≥ {thr.value_min_fee_stx_30d:g} STX in fees."
+        "</div>"
     )
 
     def _fmt(value: float | None, suffix: str = "") -> str:
@@ -687,6 +1145,12 @@ def build_value_dashboard(
     sections.append(
         f"<div class='kpi-card'><div class='kpi-label'>Avg WALTV-30</div><div class='kpi-value'>{_fmt(kpis['avg_waltv_stx'], ' STX')}</div><div class='kpi-subtext'>Median {_fmt(kpis['median_waltv_stx'], ' STX')}</div></div>"
     )
+    # Trailing 30-day average across all wallets (calendar-anchored)
+    ts30 = trailing_stats.get(30, {})
+    if ts30 and ts30.get("wallets", 0) > 0:
+        sections.append(
+            f"<div class='kpi-card'><div class='kpi-label'>Avg Last-30</div><div class='kpi-value'>{_fmt(ts30.get('avg_last_stx', 0.0), ' STX')}</div><div class='kpi-subtext'>Median {_fmt(ts30.get('median_last_stx', 0.0), ' STX')}</div></div>"
+        )
     sections.append(
         f"<div class='kpi-card'><div class='kpi-label'>Funded → Value</div><div class='kpi-value'>{_fmt(kpis['value_pct'], '%')}</div><div class='kpi-subtext'>Active {_fmt(kpis['active_pct'], '%')} | Funded {kpis['funded_wallets']}</div></div>"
     )
@@ -700,6 +1164,14 @@ def build_value_dashboard(
                 f"<div class='kpi-card'><div class='kpi-label'>Avg WALTV-{extra_window}</div>"
                 f"<div class='kpi-value'>{_fmt(stats['avg_waltv_stx'], ' STX')}</div>"
                 f"<div class='kpi-subtext'>Median {_fmt(stats['median_waltv_stx'], ' STX')}</div></div>"
+            )
+        # Add trailing counterpart
+        tstats = trailing_stats.get(extra_window, {})
+        if tstats and tstats.get("wallets", 0) > 0:
+            sections.append(
+                f"<div class='kpi-card'><div class='kpi-label'>Avg Last-{extra_window}</div>"
+                f"<div class='kpi-value'>{_fmt(tstats.get('avg_last_stx', 0.0), ' STX')}</div>"
+                f"<div class='kpi-subtext'>Median {_fmt(tstats.get('median_last_stx', 0.0), ' STX')}</div></div>"
             )
     if pox_summary.get("apy_btc_median") is not None:
         sections.append(
@@ -850,6 +1322,43 @@ def build_value_dashboard(
             ]
         )
 
+    # Activation vs Trailing comparison table
+    if window_stats:
+        comp_rows: list[dict[str, object]] = []
+        for win in sorted(window_stats.keys()):
+            wstats = window_stats.get(win, {})
+            tstats = trailing_stats.get(win, {})
+            if not wstats:
+                continue
+            comp_rows.append(
+                {
+                    "Window": f"{win}d",
+                    "WALTV Avg (STX)": wstats.get("avg_waltv_stx", 0.0),
+                    "WALTV Median (STX)": wstats.get("median_waltv_stx", 0.0),
+                    "WALTV Wallets": wstats.get("wallets", 0),
+                    "Last Avg (STX)": tstats.get("avg_last_stx", 0.0),
+                    "Last Median (STX)": tstats.get("median_last_stx", 0.0),
+                    "Last Wallets": tstats.get("wallets", 0),
+                    "Delta Avg (Last − WALTV)": (
+                        (tstats.get("avg_last_stx", 0.0) - wstats.get("avg_waltv_stx", 0.0))
+                    ),
+                    "Ratio Avg (Last / WALTV)": (
+                        (tstats.get("avg_last_stx", 0.0) / wstats.get("avg_waltv_stx", 1.0))
+                    ),
+                }
+            )
+        if comp_rows:
+            comp_df = pd.DataFrame(comp_rows)
+            sections.extend(
+                [
+                    "<div class='section'>",
+                    "<h2>Activation vs Trailing</h2>",
+                    "<p class='note'>WALTV-N measures the first N days after activation; Last-N measures the most recent N days regardless of activation date.</p>",
+                    comp_df.to_html(index=False),
+                    "</div>",
+                ]
+            )
+
     # PoX linkage
     pox_summary_text = (
         f"Median PoX APY across the last {pox_summary.get('cycles_analyzed', 0)} cycles is "
@@ -976,7 +1485,13 @@ def build_value_dashboard(
                 ]
             )
 
-    _write_html(output_path, "Stacks Wallet Value Dashboard", sections)
+    _write_html(
+        output_path,
+        "Stacks Wallet Value Dashboard",
+        sections,
+        active_nav="value",
+        last_updated=generated_at,
+    )
 
 
 def main() -> None:
@@ -1073,6 +1588,8 @@ def main() -> None:
                 max_days=args.wallet_max_days,
                 windows=args.wallet_windows,
                 force_refresh=args.force_refresh,
+                wallet_db_path=wallet_db_path,
+                skip_history_sync=skip_history_sync,
             )
             built_wallet = True
 

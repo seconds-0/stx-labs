@@ -60,6 +60,15 @@ def _price_panel_fixture():
     return pd.DataFrame({"ts": times, "stx_btc": 0.000015})
 
 
+def _price_panel_without_ratio():
+    times = pd.date_range("2025-03-01", "2025-03-02", freq="1H", tz=UTC)
+    return pd.DataFrame({
+        "ts": times,
+        "stx_usd": 2.0,
+        "btc_usd": 60000.0,
+    })
+
+
 def test_compute_wallet_windows_basic():
     activity = _activity_fixture()
     first_seen = _first_seen_fixture()
@@ -189,3 +198,44 @@ def test_summarize_window_stats():
     assert stats30["avg_waltv_stx"] > 0
     stats90 = wallet_value.summarize_window_stats(windows, window_days=90)
     assert stats90["wallets"] == 0
+
+
+def test_compute_trailing_wallet_windows_and_summary():
+    activity = _activity_fixture()
+    prices = _price_panel_fixture()
+    # Anchor trailing windows at 2025-03-21 (covers all fixture events)
+    as_of = pd.Timestamp("2025-03-21T00:00Z")
+
+    trailing = wallet_value.compute_trailing_wallet_windows(
+        activity, prices, windows=(30, 60), as_of=as_of
+    )
+    # Should have rows for both wallets for 30d
+    t30 = trailing[trailing["window_days"] == 30]
+    assert set(t30["address"]) == {"A", "B"}
+
+    # Wallet A: 3 tx totaling 1.5 STX fees in last 30 days
+    a_row = t30[t30["address"] == "A"].iloc[0]
+    assert a_row["tx_count"] == 3
+    assert abs(a_row["fee_stx_sum"] - 1.5) < 1e-9
+
+    # Wallet B: 1 tx totaling 0.001 STX
+    b_row = t30[t30["address"] == "B"].iloc[0]
+    assert b_row["tx_count"] == 1
+    assert abs(b_row["fee_stx_sum"] - 0.001) < 1e-12
+
+    # Summary for trailing 30d reflects averages across wallets
+    stats = wallet_value.summarize_trailing_window_stats(trailing, window_days=30)
+    assert stats["wallets"] == 2
+    assert stats["avg_last_stx"] > 0
+
+
+def test_trailing_handles_price_panel_without_stx_btc():
+    activity = _activity_fixture()
+    price_panel = _price_panel_without_ratio()
+    as_of = pd.Timestamp("2025-03-02T00:00Z")
+
+    trailing = wallet_value.compute_trailing_wallet_windows(
+        activity, price_panel, windows=(1,), as_of=as_of
+    )
+    # No error and result may be empty (since window small) but should be DataFrame
+    assert isinstance(trailing, pd.DataFrame)

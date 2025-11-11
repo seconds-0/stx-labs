@@ -185,7 +185,7 @@ Examples:
         "--max-iterations",
         type=int,
         default=50,
-        help="Maximum number of backfill iterations (default: 50)",
+        help="Maximum number of backfill iterations (default: 50, 0=unlimited)",
     )
     parser.add_argument(
         "--force-refresh",
@@ -235,7 +235,7 @@ Examples:
     consecutive_failures = 0
     max_consecutive_failures = 3
 
-    while iteration < args.max_iterations:
+    while args.max_iterations == 0 or iteration < args.max_iterations:
         iteration += 1
 
         # Run backfill

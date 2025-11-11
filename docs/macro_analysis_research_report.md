@@ -145,6 +145,7 @@ The architecture is perfectly suited for adding macroeconomic data:
 3. **Cache to Parquet**: Store in `data/cache/macro/*.parquet`
 4. **Merge into panel**: Use `merge_asof()` in `panel_builder.py` to align timestamps
 5. **Add tests**: Follow existing test patterns with mocked API responses
+6. **Correlate with STX/BTC**: `src/macro_analysis.py` (new) computes Pearson/Spearman + lead/lag correlations for every indicator
 
 ---
 

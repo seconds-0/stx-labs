@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+import logging
 
 import pandas as pd
 import yfinance as yf
@@ -21,6 +22,7 @@ _COINGECKO_SESSION = build_session(
     {"Accept": "application/json", "User-Agent": "stx-labs-macro/1.0"}
 )
 
+LOGGER = logging.getLogger(__name__)
 
 def _cache_path(slug: str, start_date: str, end_date: str) -> Path:
     return MACRO_CACHE_DIR / f"{slug}_{start_date}_{end_date}.parquet"
@@ -204,7 +206,11 @@ def _coingecko_supply_frame(
     if start_ts >= end_ts:
         return pd.DataFrame(columns=["date", column_name])
 
-    payload = _coingecko_market_chart_range(coin_id, start_ts, end_ts)
+    try:
+        payload = _coingecko_market_chart_range(coin_id, start_ts, end_ts)
+    except Exception as exc:  # pragma: no cover - network issues
+        LOGGER.warning("Failed to fetch %s supply from CoinGecko: %s", coin_id, exc)
+        return pd.DataFrame(columns=["date", column_name])
     market_caps = pd.DataFrame(
         payload.get("market_caps", []), columns=["timestamp_ms", "market_cap_usd"]
     )
