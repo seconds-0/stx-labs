@@ -202,3 +202,60 @@ def test_retention_and_fee_metrics(tmp_path):
             pytest.approx(fee_lookup[(pd.Timestamp("2025-02-15T00:00Z"), 30)], rel=1e-6)
             == (1500 + 2500) / 1_000_000
         )
+
+
+def test_retention_active_band(tmp_path):
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(
+            wallet_metrics, "FIRST_SEEN_CACHE_PATH", tmp_path / "first_seen.parquet"
+        )
+
+        activation_date = pd.Timestamp("2025-01-01T00:00Z")
+        activity = pd.DataFrame(
+                {
+                    "tx_id": ["x0", "x1", "x2", "y0", "y1"],
+                    "address": ["X", "X", "X", "Y", "Y"],
+                    "block_time": [
+                        activation_date,
+                        activation_date + pd.Timedelta(days=5),
+                        activation_date + pd.Timedelta(days=50),
+                        activation_date,
+                        activation_date + pd.Timedelta(days=10),
+                    ],
+                    "activity_date": [
+                        activation_date,
+                        activation_date + pd.Timedelta(days=5),
+                        activation_date + pd.Timedelta(days=50),
+                        activation_date,
+                        activation_date + pd.Timedelta(days=10),
+                    ],
+                    "fee_ustx": [1000, 1000, 1000, 1000, 1000],
+                    "tx_type": ["contract_call"] * 5,
+                }
+            )
+        first_seen = pd.DataFrame(
+            {
+                "address": ["X", "Y"],
+                "first_seen": [
+                    activation_date,
+                    activation_date,
+                ],
+            }
+        )
+
+        windows = (60,)
+        today = pd.Timestamp("2025-04-01T00:00Z")
+        retention_default = wallet_metrics.compute_retention(
+            activity, first_seen, windows, today=today
+        )
+        retention_active = wallet_metrics.compute_retention(
+            activity,
+            first_seen,
+            windows,
+            today=today,
+            mode="active_band",
+        )
+        default_rate = retention_default.iloc[0]["retention_rate"]
+        active_rate = retention_active.iloc[0]["retention_rate"]
+        assert pytest.approx(default_rate) == 1.0
+        assert pytest.approx(active_rate) == 0.5

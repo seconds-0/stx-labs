@@ -26,8 +26,6 @@ import pandas as pd
 
 from . import prices
 from . import wallet_metrics
-from .hiro import fetch_address_balances
-
 
 MICROSTX_PER_STX = 1_000_000
 MIN_WALTV_COHORT = 3  # Minimum wallets required for ROI panels
@@ -130,12 +128,23 @@ def _enrich_activity_with_prices(
     return df
 
 
+def _resolve_window_band(window: int, band_days: Mapping[int, int] | None) -> int:
+    if band_days and window in band_days:
+        band = int(band_days[window])
+    else:
+        band = 15 if window <= 15 else 30
+    if band <= 0:
+        raise ValueError("window band must be positive")
+    return min(window, band)
+
+
 def compute_wallet_windows(
     activity: pd.DataFrame,
     first_seen: pd.DataFrame,
     price_panel: pd.DataFrame,
     *,
     windows: Sequence[int] = (15, 30, 60, 90, 180),
+    band_days: Mapping[int, int] | None = None,
 ) -> pd.DataFrame:
     """Aggregate per-wallet metrics over windows from activation.
 
@@ -144,6 +153,8 @@ def compute_wallet_windows(
       - tx_count
       - fee_stx_sum
       - nv_btc_sum
+      - band_tx_count (transactions inside the trailing activity band)
+      - active_in_window (bool indicating >=1 tx in the trailing band)
     """
     if activity.empty or first_seen.empty:
         return pd.DataFrame(
@@ -154,6 +165,8 @@ def compute_wallet_windows(
                 "tx_count",
                 "fee_stx_sum",
                 "nv_btc_sum",
+                "band_tx_count",
+                "active_in_window",
             ]
         )
     enriched = _enrich_activity_with_prices(activity, price_panel)
@@ -173,14 +186,41 @@ def compute_wallet_windows(
                 "tx_count",
                 "fee_stx_sum",
                 "nv_btc_sum",
+                "band_tx_count",
+                "active_in_window",
             ]
         )
 
-    results: list[dict[str, object]] = []
-    for w in sorted(set(int(x) for x in windows if x > 0)):
+    band_lookup = {int(w): _resolve_window_band(int(w), band_days) for w in windows}
+
+    window_values = sorted(set(int(x) for x in windows if int(x) > 0))
+    if not window_values:
+        return pd.DataFrame(
+            columns=[
+                "address",
+                "activation_date",
+                "window_days",
+                "tx_count",
+                "fee_stx_sum",
+                "nv_btc_sum",
+                "band_tx_count",
+                "active_in_window",
+            ]
+        )
+
+    band_lookup = {w: _resolve_window_band(w, band_days) for w in window_values}
+
+    results: list[pd.DataFrame] = []
+    for w in window_values:
         window_slice = merged[merged["days_since_activation"] < w]
         if window_slice.empty:
             continue
+        band = band_lookup.get(w, _resolve_window_band(w, band_days))
+        band_lower = max(w - band, 0)
+        band_slice = window_slice[
+            (window_slice["days_since_activation"] >= band_lower)
+            & (window_slice["days_since_activation"] < w)
+        ]
         agg = (
             window_slice.groupby(["address", "activation_date"])[
                 ["tx_id", "fee_stx", "nv_btc"]
@@ -193,6 +233,24 @@ def compute_wallet_windows(
             .reset_index()
         )
         agg["window_days"] = w
+        if not band_slice.empty:
+            band_counts = (
+                band_slice.groupby(["address", "activation_date"])["tx_id"]
+                .count()
+                .rename("band_tx_count")
+                .reset_index()
+            )
+        else:
+            band_counts = pd.DataFrame(
+                columns=["address", "activation_date", "band_tx_count"]
+            )
+        agg = agg.merge(
+            band_counts,
+            on=["address", "activation_date"],
+            how="left",
+        )
+        agg["band_tx_count"] = agg["band_tx_count"].fillna(0).astype(int)
+        agg["active_in_window"] = agg["band_tx_count"] > 0
         results.append(agg)
     if not results:
         return pd.DataFrame(
@@ -203,6 +261,8 @@ def compute_wallet_windows(
                 "tx_count",
                 "fee_stx_sum",
                 "nv_btc_sum",
+                "band_tx_count",
+                "active_in_window",
             ]
         )
     out = pd.concat(results, ignore_index=True)
@@ -295,14 +355,13 @@ def classify_wallets(
     windows_agg: pd.DataFrame,
     thresholds: ClassificationThresholds = ClassificationThresholds(),
     balance_lookup: Mapping[str, float] | None = None,
-    max_balance_lookups: int | None = 500,
+    wallet_db_path: Path | None = None,
 ) -> pd.DataFrame:
     """Classify wallets into funded/active/value using the provided thresholds.
 
     balance_lookup allows injecting known balances in STX for testing; when not
-    provided, the function fetches current balances for at most max_balance_lookups
-    addresses via Hiro (cached). If there are more wallets than the cap, it will
-    set funded=False for the overflow to avoid heavy API usage.
+    provided, balances are loaded from the persisted wallet_balances table with a
+    fallback to live Hiro API fetches for any missing addresses.
     """
     if first_seen.empty:
         return pd.DataFrame(
@@ -318,26 +377,39 @@ def classify_wallets(
         for addr, bal in balance_lookup.items():
             funded_map[str(addr)] = bool(bal >= thresholds.funded_stx_min)
     else:
-        to_fetch = (
-            addresses
-            if max_balance_lookups is None
-            else addresses[:max_balance_lookups]
+        snapshot_date = datetime.now(UTC).date()
+        threshold_ustx = int(thresholds.funded_stx_min * MICROSTX_PER_STX)
+        stored_balances = wallet_metrics.load_wallet_balances(
+            addresses,
+            as_of_date=snapshot_date,
+            db_path=wallet_db_path,
         )
-        for addr in to_fetch:
-            try:
-                payload = fetch_address_balances(addr)
-            except Exception:
-                payload = {}
-            stx_balance_ustx = 0
-            stx = payload.get("stx") if isinstance(payload, dict) else None
-            if isinstance(stx, dict):
-                bal_str = stx.get("balance") or stx.get("locked") or 0
-                try:
-                    stx_balance_ustx = int(bal_str)
-                except Exception:
-                    stx_balance_ustx = 0
-            stx_balance = stx_balance_ustx / MICROSTX_PER_STX
-            funded_map[addr] = bool(stx_balance >= thresholds.funded_stx_min)
+        if not stored_balances.empty:
+            for row in stored_balances.itertuples():
+                balance_ustx = int(row.balance_ustx) if pd.notna(row.balance_ustx) else 0
+                funded_map[str(row.address)] = bool(balance_ustx >= threshold_ustx)
+        missing_addresses = [addr for addr in addresses if addr not in funded_map]
+        if missing_addresses:
+            wallet_metrics.ensure_wallet_balances(
+                missing_addresses,
+                as_of_date=snapshot_date,
+                funded_threshold_stx=thresholds.funded_stx_min,
+                db_path=wallet_db_path,
+            )
+            refreshed = wallet_metrics.load_wallet_balances(
+                missing_addresses,
+                as_of_date=snapshot_date,
+                max_age_days=None,
+                db_path=wallet_db_path,
+            )
+            if not refreshed.empty:
+                for row in refreshed.itertuples():
+                    balance_ustx = (
+                        int(row.balance_ustx) if pd.notna(row.balance_ustx) else 0
+                    )
+                    funded_map[str(row.address)] = bool(
+                        balance_ustx >= threshold_ustx
+                    )
 
     # Active in 30d: tx_count >= threshold in window 30
     w30 = (
@@ -395,6 +467,19 @@ def compute_value_pipeline(
         max_days=max_days, db_path=wallet_db_path
     )
     first_seen = wallet_metrics.update_first_seen_cache(activity)
+    thresholds = ClassificationThresholds()
+    if not first_seen.empty:
+        activation = compute_activation(first_seen)
+        cutoff_ts = datetime.now(UTC) - timedelta(days=max_days)
+        recent_addresses = activation[
+            activation["activation_time"] >= cutoff_ts
+        ]["address"].astype(str)
+        wallet_metrics.ensure_wallet_balances(
+            recent_addresses.tolist(),
+            as_of_date=datetime.now(UTC).date(),
+            funded_threshold_stx=thresholds.funded_stx_min,
+            db_path=wallet_db_path,
+        )
 
     # Load prices and compute aggregates
     price_panel = load_price_panel_for_activity(activity, force_refresh=force_refresh)
@@ -405,6 +490,8 @@ def compute_value_pipeline(
         first_seen=first_seen,
         activity=activity,
         windows_agg=windows_agg,
+        thresholds=thresholds,
+        wallet_db_path=wallet_db_path,
     )
 
     return {
@@ -633,3 +720,98 @@ def compute_cpa_panel(
     grouped["above_target"] = grouped["avg_waltv_stx"] >= cpa_target_stx
     grouped["activation_date"] = grouped["activation_date"].dt.tz_convert(UTC)
     return grouped.reset_index(drop=True)
+
+
+def compute_cpa_panel_by_channel(
+    windows_agg: pd.DataFrame,
+    address_channel_map: pd.DataFrame,
+    *,
+    window_days: int = 180,
+    cac_by_channel: Mapping[str, float] | None = None,
+    min_wallets: int = MIN_WALTV_COHORT,
+) -> pd.DataFrame:
+    """Aggregate WALTV and payback multiples per (activation_date, channel)."""
+    if window_days <= 0:
+        raise ValueError("window_days must be positive")
+    if min_wallets < 1:
+        raise ValueError("min_wallets must be >= 1")
+    if windows_agg.empty or address_channel_map.empty:
+        return pd.DataFrame(
+            columns=[
+                "activation_date",
+                "channel",
+                "avg_waltv_stx",
+                "median_waltv_stx",
+                "wallets",
+                "cac_stx",
+                "payback_multiple",
+            ]
+        )
+
+    df = windows_agg[windows_agg["window_days"] == window_days].copy()
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "activation_date",
+                "channel",
+                "avg_waltv_stx",
+                "median_waltv_stx",
+                "wallets",
+                "cac_stx",
+                "payback_multiple",
+            ]
+        )
+
+    if not pd.api.types.is_datetime64_any_dtype(df["activation_date"]):
+        df["activation_date"] = pd.to_datetime(df["activation_date"], utc=True)
+    else:
+        df["activation_date"] = df["activation_date"].dt.tz_convert(UTC)
+
+    channel_df = address_channel_map.copy()
+    channel_df["address"] = channel_df["address"].astype(str)
+    if "activation_date" in channel_df.columns:
+        channel_df["activation_date"] = pd.to_datetime(
+            channel_df["activation_date"], utc=True
+        ).dt.floor("D")
+    else:
+        raise ValueError("address_channel_map must include activation_date")
+    if "channel" not in channel_df.columns:
+        raise ValueError("address_channel_map must include channel column")
+    channel_df["channel"] = channel_df["channel"].fillna("Unknown").astype(str)
+
+    merged = df.merge(
+        channel_df,
+        on=["address", "activation_date"],
+        how="left",
+    )
+    merged["channel"] = merged["channel"].fillna("Unknown")
+
+    grouped = (
+        merged.groupby(["activation_date", "channel"])
+        .agg(
+            avg_waltv_stx=("fee_stx_sum", "mean"),
+            median_waltv_stx=("fee_stx_sum", "median"),
+            wallets=("address", "count"),
+        )
+        .reset_index()
+    )
+    grouped = grouped[grouped["wallets"] >= max(min_wallets, 1)]
+    if grouped.empty:
+        return grouped
+
+    grouped = grouped.sort_values(["activation_date", "channel"]).reset_index(drop=True)
+
+    if cac_by_channel:
+        grouped["cac_stx"] = grouped["channel"].map(cac_by_channel)
+        grouped["payback_multiple"] = grouped.apply(
+            lambda row: (
+                row["avg_waltv_stx"] / row["cac_stx"]
+                if pd.notna(row["cac_stx"]) and row["cac_stx"]
+                else pd.NA
+            ),
+            axis=1,
+        )
+    else:
+        grouped["cac_stx"] = pd.NA
+        grouped["payback_multiple"] = pd.NA
+    return grouped

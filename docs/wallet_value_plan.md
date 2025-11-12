@@ -4,7 +4,7 @@ This document captures the plan, implementation, and runbook for modeling the ec
 
 ### Summary
 - Compute Network Value (NV) per wallet as on-chain STX fees converted to BTC using historical STX/BTC prices.
-- Compute Wallet Adjusted LTV (WALTV) per activation cohort over windows (15/30/60/90/180). In v1, WALTV ≈ NV (i.e., no incentives/derived value yet).
+- Compute Wallet Adjusted LTV (WALTV) per activation cohort over windows (15/30/60/90/180). In v1, WALTV ≈ NV (i.e., no incentives/derived value yet), so UI labels currently read “NV” to avoid overstating maturity.
 - Classify wallets into funnel stages: funded → active → value, with thresholds tuned to filter faucet/bot activity.
 - Produce a dark-themed HTML dashboard for funnel conversion and WALTV distributions; fully rerunnable with cached deltas.
 
@@ -35,6 +35,7 @@ Added (small, focused extensions)
   - `compute_value_pipeline` → end-to-end for dashboards
 - Hiro balances endpoint: `src/hiro.py:fetch_address_balances(address)` (cached)
 - Value dashboard: `scripts/build_dashboards.py:build_value_dashboard(...)`
+- ROI one-pager helpers: `src/roi.py`, `src/external_inputs.py`, and `build_roi_dashboard` in `scripts/build_dashboards.py` (see `docs/roi_one_pager_spec.md` for the detailed definitions and KPI formulas).
 - Tests: `tests/test_wallet_value.py` (NV/window calc + classification)
 
 Conclusion
@@ -71,6 +72,7 @@ Build dashboards
   - Wallet Growth: `public/wallet/index.html`
   - Wallet Value: `public/value/index.html`
   - Macro: `public/macro/index.html`
+  - ROI One-Pager: `public/roi/index.html` (built automatically; run `--one-pager-only` for the ROI dash in isolation; provide CAC + channel CSVs per `docs/roi_one_pager_spec.md` to unlock the payback tile).
 
 Notebook validation (optional, per repo workflow)
 - Quick: `make smoke-notebook` (30-day window)

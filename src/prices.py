@@ -217,6 +217,25 @@ def _ensure_price_series(
     )
 
 
+def load_spot_price(
+    symbol: str = "STX-USD", *, force_refresh: bool = False
+) -> tuple[pd.Timestamp, float]:
+    """Return the most recent price (timestamp, price)."""
+    end = datetime.now(UTC)
+    start = end - timedelta(hours=12)
+    series = _ensure_price_series(
+        symbol,
+        start,
+        end,
+        frequency="1h",
+        force_refresh=force_refresh,
+    )
+    if series.empty:
+        raise RuntimeError(f"No spot price data available for {symbol}")
+    latest = series.sort_values("ts").iloc[-1]
+    return pd.to_datetime(latest["ts"], utc=True), float(latest["px"])
+
+
 def fetch_price_series(
     symbol: str,
     start: datetime,

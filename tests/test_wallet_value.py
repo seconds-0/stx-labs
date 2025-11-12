@@ -200,6 +200,77 @@ def test_summarize_window_stats():
     assert stats90["wallets"] == 0
 
 
+def test_compute_wallet_windows_active_flag():
+    activity = pd.DataFrame(
+            {
+                "tx_id": ["late", "early"],
+                "address": ["A", "B"],
+                "block_time": [
+                    pd.Timestamp("2025-02-20T00:00Z"),
+                    pd.Timestamp("2025-01-05T00:00Z"),
+                ],
+                "activity_date": [
+                    pd.Timestamp("2025-02-20T00:00Z"),
+                    pd.Timestamp("2025-01-05T00:00Z"),
+                ],
+                "fee_ustx": [1_000_000, 1_000_000],
+                "tx_type": ["contract_call", "contract_call"],
+            }
+        )
+    first_seen = pd.DataFrame(
+        {
+            "address": ["A", "B"],
+            "first_seen": [
+                pd.Timestamp("2025-01-01T00:00Z"),
+                pd.Timestamp("2025-01-01T00:00Z"),
+            ],
+        }
+    )
+    prices = _price_panel_fixture()
+    windows = wallet_value.compute_wallet_windows(
+        activity, first_seen, prices, windows=(60,)
+    )
+    late_row = windows[windows["address"] == "A"].iloc[0]
+    early_row = windows[windows["address"] == "B"].iloc[0]
+    assert bool(late_row["active_in_window"]) is True
+    assert late_row["band_tx_count"] == late_row["tx_count"] == 1
+    assert bool(early_row["active_in_window"]) is False
+    assert early_row["band_tx_count"] == 0
+
+
+def test_compute_cpa_panel_by_channel():
+    activation_date = pd.Timestamp("2025-01-01T00:00Z", tz=UTC)
+    windows_agg = pd.DataFrame(
+        {
+            "address": ["A", "B"],
+            "activation_date": [activation_date, activation_date],
+            "window_days": [180, 180],
+            "tx_count": [1, 1],
+            "fee_stx_sum": [10.0, 5.0],
+            "nv_btc_sum": [0.0, 0.0],
+            "band_tx_count": [1, 1],
+            "active_in_window": [True, True],
+        }
+    )
+    channel_map = pd.DataFrame(
+        {
+            "address": ["A", "B"],
+            "activation_date": [activation_date, activation_date],
+            "channel": ["ads", "organic"],
+        }
+    )
+    panel = wallet_value.compute_cpa_panel_by_channel(
+        windows_agg,
+        channel_map,
+        window_days=180,
+        cac_by_channel={"ads": 5.0, "organic": 2.0},
+        min_wallets=1,
+    )
+    assert set(panel["channel"]) == {"ads", "organic"}
+    ads_row = panel[panel["channel"] == "ads"].iloc[0]
+    assert pytest.approx(ads_row["payback_multiple"]) == 2.0
+
+
 def test_compute_trailing_wallet_windows_and_summary():
     activity = _activity_fixture()
     prices = _price_panel_fixture()

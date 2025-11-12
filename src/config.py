@@ -38,7 +38,7 @@ class RetryConfig:
     """Settings for HTTP retry/backoff behaviour."""
 
     wait_min_seconds: float = 0.5
-    wait_max_seconds: float = 8.0
+    wait_max_seconds: float = 30.0  # Increased from 8.0 to handle rate limits better
     max_attempts: int = 5
     status_forcelist: tuple[int, ...] = field(
         default_factory=lambda: (429, 500, 502, 503, 504, 522, 525)

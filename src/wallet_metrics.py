@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 import duckdb
 import pandas as pd
 import shutil
 import time
+import logging
 
 from . import config as cfg
 from .cache_utils import read_parquet, write_parquet
-from .hiro import fetch_transactions_page
+from .hiro import fetch_transactions_page, fetch_address_balances
 
+LOGGER = logging.getLogger(__name__)
 WALLET_CACHE_DIR = cfg.CACHE_DIR / "wallet_metrics"
 WALLET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -60,6 +63,18 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             burn_block_height BIGINT,
             microblock_sequence BIGINT,
             ingested_at TIMESTAMP
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wallet_balances (
+            address VARCHAR,
+            as_of_date DATE,
+            balance_ustx BIGINT,
+            funded BOOLEAN,
+            ingested_at TIMESTAMP,
+            PRIMARY KEY (address, as_of_date)
         );
         """
     )
@@ -145,6 +160,39 @@ def _insert_transactions(conn: duckdb.DuckDBPyConnection, frame: pd.DataFrame) -
     )
     conn.unregister("incoming_transactions")
     return len(store_df)
+
+
+def _insert_wallet_balances(conn: duckdb.DuckDBPyConnection, frame: pd.DataFrame) -> int:
+    if frame.empty:
+        return 0
+    store_df = frame.copy()
+    store_df["ingested_at"] = (
+        store_df["ingested_at"].dt.tz_convert("UTC").dt.tz_localize(None)
+    )
+    conn.register("incoming_wallet_balances", store_df)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO wallet_balances BY NAME
+        SELECT * FROM incoming_wallet_balances;
+        """
+    )
+    conn.unregister("incoming_wallet_balances")
+    return len(store_df)
+
+
+def _extract_stx_balance(payload: dict[str, Any] | None) -> int:
+    if not payload or not isinstance(payload, dict):
+        return 0
+    stx = payload.get("stx")
+    if not isinstance(stx, dict):
+        return 0
+    balance_raw = stx.get("balance")
+    if balance_raw is None:
+        balance_raw = stx.get("locked")
+    try:
+        return int(balance_raw)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _page_cursor(results: list[dict[str, Any]]) -> int | None:
@@ -257,6 +305,169 @@ def _sync_historical_transactions(
         if next_cursor is None or next_cursor >= cursor_to:
             break
         cursor_to = next_cursor
+
+
+def _select_existing_balance_addresses(
+    conn: duckdb.DuckDBPyConnection,
+    snapshot_date: date,
+    addresses: list[str],
+) -> set[str]:
+    if not addresses:
+        return set()
+    result = conn.execute(
+        """
+        SELECT address
+        FROM wallet_balances
+        WHERE as_of_date = ?
+          AND address IN (SELECT * FROM UNNEST(?))
+        """,
+        [snapshot_date, addresses],
+    ).fetchdf()
+    if result.empty:
+        return set()
+    return set(result["address"].astype(str).tolist())
+
+
+def ensure_wallet_balances(
+    addresses: Sequence[str],
+    *,
+    as_of_date: date | None = None,
+    funded_threshold_stx: float = 10.0,
+    fetcher: Callable[..., dict[str, Any]] = fetch_address_balances,
+    db_path: Path | None = None,
+    delay_seconds: float = 0.1,
+    batch_size: int | None = None,
+    max_workers: int = 10,
+) -> int:
+    """Ensure a balance snapshot exists for all addresses on the given date.
+    
+    Args:
+        addresses: List of wallet addresses to fetch balances for
+        as_of_date: Date for the snapshot (defaults to today)
+        funded_threshold_stx: Minimum STX balance to consider "funded"
+        fetcher: Function to fetch balance data
+        db_path: Optional path to DuckDB file
+        delay_seconds: Delay between batches to avoid rate limits (default: 0.1s)
+        batch_size: Process addresses in batches with concurrent requests within batches
+        max_workers: Number of concurrent requests per batch (default: 10)
+    """
+    deduped = sorted({str(addr) for addr in addresses if addr})
+    if not deduped:
+        return 0
+    snapshot_date = as_of_date or _utc_now().date()
+    with _connect(db_path=db_path) as conn:
+        _ensure_schema(conn)
+        existing = _select_existing_balance_addresses(conn, snapshot_date, deduped)
+    missing = [addr for addr in deduped if addr not in existing]
+    if not missing:
+        return 0
+    
+    rows: list[dict[str, Any]] = []
+    funded_threshold_ustx = int(funded_threshold_stx * MICROSTX_PER_STX)
+    
+    def fetch_single_balance(addr: str) -> dict[str, Any] | None:
+        """Fetch balance for a single address, return row dict or None if failed."""
+        try:
+            payload = fetcher(addr)
+            balance_ustx = _extract_stx_balance(payload)
+            balance_stx = balance_ustx / MICROSTX_PER_STX
+            funded = bool(balance_ustx >= funded_threshold_ustx)
+            LOGGER.info(
+                "✓ Fetched balance for %s: %.6f STX (funded: %s)",
+                addr,
+                balance_stx,
+                funded,
+            )
+            return {
+                "address": addr,
+                "as_of_date": snapshot_date,
+                "balance_ustx": balance_ustx,
+                "funded": funded,
+                "ingested_at": pd.Timestamp(_utc_now()),
+            }
+        except Exception as exc:  # pragma: no cover - network failure path
+            LOGGER.warning("✗ Failed to fetch balance for %s: %s", addr, exc)
+            # Don't insert failed addresses - they'll be retried on next run
+            # This allows the script to be resumable
+            return None
+    
+    # Process in batches if specified, otherwise process all sequentially
+    if batch_size and batch_size > 0:
+        batches = [missing[i:i + batch_size] for i in range(0, len(missing), batch_size)]
+        LOGGER.info(
+            "Processing %d addresses in %d batches of %d (max %d concurrent requests per batch)",
+            len(missing), len(batches), batch_size, max_workers
+        )
+    else:
+        batches = [[addr] for addr in missing]
+        max_workers = 1  # Sequential if no batching
+    
+    for batch_idx, batch in enumerate(batches):
+        # Process batch with concurrent requests
+        batch_rows = []
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
+            future_to_addr = {executor.submit(fetch_single_balance, addr): addr for addr in batch}
+            for future in as_completed(future_to_addr):
+                addr = future_to_addr[future]
+                try:
+                    row = future.result()
+                    if row:
+                        batch_rows.append(row)
+                except Exception as exc:
+                    LOGGER.warning("✗ Exception fetching balance for %s: %s", addr, exc)
+        
+        rows.extend(batch_rows)
+        
+        # Delay between batches to respect rate limits
+        if batch_idx < len(batches) - 1:
+            time.sleep(delay_seconds)
+            LOGGER.info("Completed batch %d/%d, processed %d/%d addresses", 
+                       batch_idx + 1, len(batches), len(rows), len(missing))
+    
+    # Insert all rows, including failed ones (marked as unfunded)
+    with _connect(db_path=db_path) as conn:
+        _ensure_schema(conn)
+        inserted = _insert_wallet_balances(conn, pd.DataFrame(rows))
+    return inserted
+
+
+def load_wallet_balances(
+    addresses: Sequence[str],
+    *,
+    as_of_date: date | None = None,
+    max_age_days: int | None = 7,
+    db_path: Path | None = None,
+) -> pd.DataFrame:
+    """Load the most recent balance snapshot per address."""
+    deduped = sorted({str(addr) for addr in addresses if addr})
+    if not deduped:
+        return pd.DataFrame(
+            columns=["address", "as_of_date", "balance_ustx", "funded", "ingested_at"]
+        )
+    with _connect(read_only=True, db_path=db_path) as conn:
+        try:
+            df = conn.execute(
+                """
+                SELECT address, as_of_date, balance_ustx, funded, ingested_at
+                FROM wallet_balances
+                WHERE address IN (SELECT * FROM UNNEST(?))
+                """,
+                [deduped],
+            ).fetchdf()
+        except duckdb.CatalogException:
+            return pd.DataFrame(
+                columns=["address", "as_of_date", "balance_ustx", "funded", "ingested_at"]
+            )
+    if df.empty:
+        return df
+    df["as_of_date"] = pd.to_datetime(df["as_of_date"])
+    target_date = pd.to_datetime(as_of_date or _utc_now().date())
+    df = df[df["as_of_date"] <= target_date]
+    if max_age_days is not None:
+        min_date = target_date - pd.Timedelta(days=max_age_days)
+        df = df[df["as_of_date"] >= min_date]
+    df = df.sort_values("as_of_date").drop_duplicates("address", keep="last")
+    return df.reset_index(drop=True)
 
 
 def ensure_transaction_history(
@@ -471,13 +682,39 @@ def compute_active_wallets(
     return summary
 
 
+def _resolve_retention_band(window: int, band_days: Mapping[int, int] | None) -> int:
+    """Return the trailing band (days) to use for an activation window."""
+    if band_days and window in band_days:
+        band = int(band_days[window])
+    else:
+        band = 15 if window <= 15 else 30
+    if band <= 0:
+        raise ValueError("band_days must be positive")
+    return min(window, band)
+
+
 def compute_retention(
     activity: pd.DataFrame,
     first_seen: pd.DataFrame,
     windows: Sequence[int],
     *,
     today: pd.Timestamp | None = None,
+    mode: str = "cumulative",
+    band_days: Mapping[int, int] | None = None,
 ) -> pd.DataFrame:
+    """Compute activation-aligned retention.
+
+    Args:
+        activity: Transaction activity with `activity_date` column.
+        first_seen: First successful canonical transaction per address.
+        windows: Iterable of activation windows in days.
+        today: Optional anchor date for maturity checks.
+        mode: "cumulative" (default) counts wallets with any activity in (0, H].
+              "active_band" counts wallets with activity in the trailing band
+              (H - band_days[H], H].
+        band_days: Optional mapping window_days -> trailing band size. Defaults
+              to 15 days for the 15-day window and 30 days for >=30-day windows.
+    """
     if activity.empty or first_seen.empty:
         return pd.DataFrame(
             columns=[
@@ -546,6 +783,10 @@ def compute_retention(
             else pd.Timestamp(today).tz_localize("UTC").floor("D")
         )
 
+    mode = mode.lower()
+    if mode not in {"cumulative", "active_band"}:
+        raise ValueError("mode must be 'cumulative' or 'active_band'")
+
     results: list[dict[str, object]] = []
     for window in windows:
         eligible_dates = cohort_sizes.index[
@@ -554,11 +795,17 @@ def compute_retention(
         if eligible_dates.empty:
             continue
 
+        if mode == "cumulative":
+            lower = 0
+        else:
+            band = _resolve_retention_band(window, band_days)
+            lower = max(window - band, 0)
+
+        engaged_mask = (merged["days_since_activation"] > lower) & (
+            merged["days_since_activation"] <= window
+        )
         engaged = (
-            merged[
-                (merged["days_since_activation"] > 0)
-                & (merged["days_since_activation"] <= window)
-            ]
+            merged[engaged_mask]
             .drop_duplicates(subset=["activation_date", "address"])
             .groupby("activation_date")["address"]
             .nunique()

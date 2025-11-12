@@ -31,6 +31,30 @@ This command:
 4. Classifies wallets (funded, active, value).
 5. Writes HTML dashboards to `out/value` (or `public/value` if publishing).
 
+### 2a. Build the ROI One-Pager
+
+See `docs/roi_one_pager_spec.md` for full definitions. The dashboard can run standalone (skipping wallet/value/macro) or alongside the standard build.
+
+```bash
+python scripts/build_dashboards.py \
+  --one-pager-only \
+  --wallet-max-days 365 \
+  --roi-windows 15 30 60 90 180 \
+  --wallet-db-snapshot \
+  --cac-file data/external/cac_by_channel.csv \
+  --channel-map-file data/external/address_channel_map.csv \
+  [--ensure-wallet-balances]
+```
+
+Flags:
+- `--one-pager-only` limits the run to `public/roi/index.html`. Omit it to build ROI plus the normal dashboards.
+- `--roi-windows` controls the activation horizons for retention + WALTV tiles (defaults to `15 30 60 90 180`).
+- `--cac-file` / `--channel-map-file` feed the payback table; when omitted the page falls back to breakeven CPA guidance.
+- `--incentives-file` (optional) validates incentive inputs ahead of future tiles.
+- `--ensure-wallet-balances` forces a funded snapshot refresh for recent wallets (useful before deploying, but omit it if Hiro limits are tight—the ROI math doesn't require funded classification today).
+
+Outputs land in `out/roi_dashboard.html` and copy to `public/roi/index.html` when `--public-dir` is left at its default.
+
 ---
 
 ## 3. Validation Checklist
