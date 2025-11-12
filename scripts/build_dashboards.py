@@ -38,14 +38,15 @@ SUPPORTED_ROI_WINDOWS: tuple[int, ...] = (15, 30, 60, 90, 180)
 
 
 NAV_LINKS: list[tuple[str, str, str]] = [
+    ("roi", "ROI", "roi/index.html"),
     ("wallet", "Wallet", "wallet/index.html"),
     ("value", "Value", "value/index.html"),
     ("macro", "Macro", "macro/index.html"),
-    ("roi", "ROI", "roi/index.html"),
     ("coinbase", "Coinbase", "coinbase/index.html"),
     ("coinbase_replacement", "Coinbase Replacement", "coinbase_replacement/index.html"),
     ("scenarios", "Scenarios", "scenarios/index.html"),
 ]
+DEFAULT_NAV_KEY = NAV_LINKS[0][0]
 
 RETENTION_BUCKET_BREAKS = [-0.1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 75, 100, 125]
 RETENTION_BUCKET_LABELS = [
@@ -83,8 +84,8 @@ RETENTION_BUCKET_COLORS = [
     "#FFD700",
 ]
 RETENTION_BUCKET_NOTE = (
-    "Color bands: 0-5%, 5-10%, 10-15%, 15-20%, 20-25%, 25-30%, 30-35%, 35-40%, 40-45%, "
-    "45-50%, 50-55%, 55-60% (5-point steps), then 60-75% bronze, 75-100% silver, 100%+ gold."
+    "Colors progress from low-retention violet (<5%) through bronze/silver/gold for cohorts above 60%, "
+    "so high-performing cohorts pop immediately—hover any cell for the exact percentage."
 )
 RETENTION_COLOR_SCALE: list[tuple[float, str]] = []
 for idx, color in enumerate(RETENTION_BUCKET_COLORS):
@@ -534,7 +535,8 @@ def render_retention_heatmap(retention: pd.DataFrame) -> str:
         [
             "<div class='section'>",
             "<h2>Retention</h2>",
-            "<p class='note'>Each cell shows the % of wallets in a cohort that transacted during the final 30 days (15 days for the 15d column) of the specified window. "
+            "<p class='note'>Each cell shows the share of a cohort that was still transacting inside the final activity band "
+            "(15 days for the 15d horizon, 30 days for the rest). "
             f"{RETENTION_BUCKET_NOTE}</p>",
             pio.to_html(fig, include_plotlyjs="cdn", full_html=False),
             "</div>",
@@ -590,7 +592,9 @@ def render_waltv_bars(summary: pd.DataFrame, *, spot_price: float | None, as_of:
         [
             "<div class='section'>",
             "<h2>Average NV (All vs Survivors)</h2>",
-            "<p class='note'>All-wallet averages include zeroes for inactive wallets; survivor averages only include wallets with activity in the trailing band of each window. NV currently equals WALTV because we have not applied derived value / incentives yet.</p>",
+            "<p class='note'>All-wallet averages keep zeros for dormant wallets so funnel drag is visible; "
+            "survivor averages isolate wallets that were active during each window’s trailing band. "
+            "NV currently equals WALTV because incentives/derived value are not applied yet.</p>",
             pio.to_html(fig, include_plotlyjs="cdn", full_html=False),
             table,
             "</div>",
@@ -635,7 +639,7 @@ def render_payback_table(
         [
             "<div class='section'>",
             f"<h2>{title}</h2>",
-            "<p class='note'>Payback Multiple = Avg NV (window) ÷ CAC. Values &gt; 1.0 indicate fees earned exceed acquisition cost at the stated horizon. Rename once WALTV diverges from NV.</p>"
+            "<p class='note'>Payback Multiple = Avg NV (window) ÷ CAC; values above 1.0 mean the cohort has already covered acquisition cost at that horizon.</p>"
             + (
                 f"<p class='note'>Spot STX/USD ≈ ${spot_price:,.4f} as of {as_of:%Y-%m-%d %H:%M %Z}</p>"
                 if spot_price is not None and as_of is not None
@@ -926,8 +930,8 @@ def build_wallet_dashboard(
     sections = [
         "<div class='section'>",
         "<h1>Stacks Wallet Growth Dashboard</h1>",
-        "<p class='note'>Derived from Hiro canonical transactions, cached locally. Updated "
-        f"{generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>",
+        "<p class='note'>Snapshot built from Hiro canonical transactions cached locally at build time so dashboard reads are instant. "
+        f"Data last refreshed {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>",
         (
             "<div class='note'><strong>Definitions:</strong> "
             "Active wallets (this page): unique addresses with any transaction activity in the selected trailing window. "
@@ -946,11 +950,12 @@ def build_wallet_dashboard(
         )
     if retention_html:
         sections.extend(
-            [
-                "<div class='section'>",
-                "<h2>Cohort Retention</h2>",
-                "<p class='note'>Active-band retention (activity in final 15/30 days of each window). "
-                f"{RETENTION_BUCKET_NOTE}</p>",
+                [
+                    "<div class='section'>",
+                    "<h2>Cohort Retention</h2>",
+                    "<p class='note'>Active-band retention counts wallets that touched the protocol in the final 15 days "
+                    "of the 15d horizon and the final 30 days of longer windows, which mirrors how we define “still doing something.” "
+                    f"{RETENTION_BUCKET_NOTE}</p>",
                 retention_html,
                 "</div>",
             ]
@@ -1533,14 +1538,12 @@ def build_macro_dashboard(
     macro_sections = [
         "<div class='section'>",
         "<h1>Stacks Macro Dashboard</h1>",
-        "<p class='note'>Daily macro indicators from FRED, Yahoo Finance, and CoinGecko. "
-        f"History window: {start_str} → {end_str}. Generated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>",
+        "<p class='note'>Context panel covering FRED labor data, Yahoo Finance benchmarks, and CoinGecko crypto series "
+        f"for {start_str} → {end_str}. Updated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>",
     ]
     if price_fetch_errors:
         macro_sections.append(
-            "<p class='note'>Price data note: "
-            + " / ".join(price_fetch_errors)
-            + "</p>"
+            "<p class='note'>Some price feeds failed to refresh: " + " / ".join(price_fetch_errors) + "</p>"
         )
     macro_sections.extend(["<h2>Latest Snapshot</h2>", summary_table, "</div>"])
 
@@ -1600,7 +1603,7 @@ def build_macro_dashboard(
             [
                 "<div class='section'>",
                 "<h2>STX/BTC Correlation Summary</h2>",
-                "<p class='note'>Correlations computed on overlapping dates; positive lag means the indicator leads STX/BTC by that many days.</p>",
+                "<p class='note'>Correlations use overlapping dates only; a positive lag means the indicator historically led STX/BTC by that many days.</p>",
                 corr_table_html,
                 pio.to_html(heatmap_fig, include_plotlyjs="cdn", full_html=False),
             ]
@@ -1785,6 +1788,8 @@ def build_public_index(public_dir: Path) -> None:
         f'        <a data-key="{key}" data-href="{href}" href="{href}">{label}</a>'
         for key, label, href in NAV_LINKS
     )
+    default_href = NAV_LINKS[0][2]
+    default_key = DEFAULT_NAV_KEY
     template = Template(
         """<!DOCTYPE html>
 <html lang="en">
@@ -1815,9 +1820,9 @@ $nav_links
     </aside>
     <div class="content">
       <div class="topbar">
-        <p>Use the sidebar to switch dashboards or <a class="open-link" id="open-new" href="/wallet/index.html" target="_blank" rel="noreferrer">open current in new tab ↗</a></p>
+        <p>Use the sidebar to switch dashboards or <a class="open-link" id="open-new" href="$default_href" target="_blank" rel="noreferrer">open current in new tab ↗</a></p>
       </div>
-      <iframe id="dash-frame" src="/wallet/index.html" title="Stacks Analytics Dashboard"></iframe>
+      <iframe id="dash-frame" src="$default_href" title="Stacks Analytics Dashboard"></iframe>
       <footer>Generated $stamp</footer>
     </div>
     <script>
@@ -1840,7 +1845,7 @@ $nav_links
           activate(link.dataset.key, link.dataset.href);
         });
       });
-      const initialKey = window.location.hash ? window.location.hash.slice(1) : 'wallet';
+      const initialKey = window.location.hash ? window.location.hash.slice(1) : '$default_key';
       const initialLink = links.find((link) => link.dataset.key === initialKey) || links[0];
       activate(initialLink.dataset.key, initialLink.dataset.href, false);
     </script>
@@ -1848,7 +1853,15 @@ $nav_links
 </html>
 """
     )
-    index_path.write_text(template.substitute(stamp=stamp, nav_links=nav_links), encoding="utf-8")
+    index_path.write_text(
+        template.substitute(
+            stamp=stamp,
+            nav_links=nav_links,
+            default_href=default_href,
+            default_key=default_key,
+        ),
+        encoding="utf-8",
+    )
     print(f"Wrote {index_path}")
 
 
@@ -1949,10 +1962,9 @@ def build_value_dashboard(
     if spot_price is not None and spot_price_ts is not None:
         usd_hint = f" Spot STX/USD ≈ ${spot_price:,.4f} (as of {spot_price_ts:%Y-%m-%d %H:%M %Z})."
     sections.append(
-        "<p class='note'>Network Value (NV) computed as STX fees converted to BTC using "
-        "historical STX/BTC prices nearest to each transaction timestamp. "
-        "WALTV currently equals NV (no incentives/derived added yet). "
-        f"Updated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.{usd_hint}</p>"
+        "<p class='note'>Network Value (NV) converts each wallet's STX fees into BTC using the closest historical STX/BTC print. "
+        "Because incentives and derived value adjustments have not landed yet, NV and WALTV are identical. "
+        f"Snapshot generated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.{usd_hint}</p>"
     )
     # Add classification definitions for clarity at the top of the page.
     thr = wallet_value.ClassificationThresholds()
@@ -2133,14 +2145,15 @@ def build_value_dashboard(
             cpa_table[f"Median WALTV-{roi_window} (USD)"] = (
                 cpa_table[f"Median WALTV-{roi_window} (STX)"].astype(float) * spot_price
             )
-        target_note = f"Target CPA: {cpa_target_stx} STX"
+        target_caption = f"{cpa_target_stx} STX CPA target"
         if spot_price is not None:
-            target_note += f" (~${cpa_target_stx * spot_price:,.2f})"
+            target_caption += f" (~${cpa_target_stx * spot_price:,.2f})"
         sections.extend(
             [
                 "<div class='section'>",
                 f"<h2>ROI & CPA Signal ({roi_window}d)</h2>",
-                f"<p class='note'>{target_note}. Payback multiple compares WALTV-{roi_window} to the target.</p>",
+                f"<p class='note'>Payback Multiple = WALTV-{roi_window} ÷ target CPA ({target_caption}). "
+                f"Series sitting above 1.0 have already earned back their acquisition cost within {roi_window} days.</p>",
                 pio.to_html(cpa_fig, include_plotlyjs="cdn", full_html=False),
                 cpa_table.to_html(index=False),
                 "</div>",
@@ -2210,7 +2223,8 @@ def build_value_dashboard(
                 [
                     "<div class='section'>",
                     "<h2>Activation vs Trailing</h2>",
-                    "<p class='note'>WALTV-N measures the first N days after activation; Last-N measures the most recent N days regardless of activation date.</p>",
+                    "<p class='note'>WALTV-N tracks the first N days post-activation, while Last-N measures the most recent calendar window for the entire base. "
+                    "Comparing the two highlights whether fresh cohorts or the mature install base are driving value.</p>",
                     comp_df.to_html(index=False, float_format=lambda x: f"{x:.4f}"),
                     "</div>",
                 ]
@@ -2218,9 +2232,9 @@ def build_value_dashboard(
 
     # PoX linkage
     pox_summary_text = (
-        f"Median PoX APY across the last {pox_summary.get('cycles_analyzed', 0)} cycles is "
+        f"Across the last {pox_summary.get('cycles_analyzed', 0)} PoX cycles, median APY was "
         f"{pox_summary.get('apy_btc_median', '—')}% with average participation "
-        f"{pox_summary.get('participation_rate_mean', '—')}%."
+        f"{pox_summary.get('participation_rate_mean', '—')}%—a useful benchmark for wallet-derived NV."
         if pox_summary.get("cycles_analyzed", 0)
         else "PoX cycle data unavailable."
     )
@@ -2505,13 +2519,9 @@ def build_roi_dashboard(
     else:
         guardrail = (
             "<div class='section'>"
-            # The ROI spec requires transparent messaging when CAC/channel files are
-            # missing; this card keeps the breakeven CPA visible so finance still
-            # has a guardrail even without per-channel payback.
             "<h2>Payback vs CAC</h2>"
-            f"<p class='note'>Provide --cac-file (channel,cac_stx) and --channel-map-file "
-            "(address,activation_date,channel) to render channel payback multiples. "
-            f"Until then, use the Breakeven CPA (1.0x) benchmark below.</p>"
+            "<p class='note'>Channel payback requires --cac-file (channel,cac_stx) plus --channel-map-file "
+            "(address,activation_date,channel). Until those inputs are wired, lean on the breakeven CPA guardrail below.</p>"
             f"<div class='kpi-card' style='max-width:260px;'>"
             "<div class='kpi-label'>Breakeven CPA @180d (NV)</div>"
             f"<div class='kpi-value'>{_format_number(expected_180)} STX</div>"
