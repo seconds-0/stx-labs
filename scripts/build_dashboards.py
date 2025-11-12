@@ -2474,7 +2474,10 @@ def build_roi_dashboard(
             "label": "Active Wallets ≤180d",
             "value": f"{young_wallets} ({young_pct:.1f}%)",
             "subtext": "Share of active base in last 30d",
-            "tooltip": "Wallets with activity in the last 30 days and activation time ≤180 days ago.",
+            "tooltip": (
+                "Count of wallets that (a) transacted in the last 30 days and (b) were activated ≤180 days ago. "
+                "Percentage shows their share of the entire last-30-day active base."
+            ),
         }
     )
     cards.append(
@@ -2482,7 +2485,10 @@ def build_roi_dashboard(
             "label": "Active Wallets >180d",
             "value": f"{legacy_wallets} ({legacy_pct:.1f}%)",
             "subtext": "Legacy share of last-30d active base",
-            "tooltip": "Wallets with last-30d activity that activated more than 180 days ago.",
+            "tooltip": (
+                "Wallets with last-30-day activity whose activation was more than 180 days ago. "
+                "Percentage indicates how much of today’s active base is made up of long-tenured wallets."
+            ),
         }
     )
 
