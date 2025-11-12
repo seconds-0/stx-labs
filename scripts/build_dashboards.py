@@ -12,35 +12,86 @@ from pathlib import Path
 from string import Template
 from typing import Iterable, Sequence
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
+from plotly.subplots import make_subplots
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src import external_inputs
 from src import macro_analysis
 from src import macro_data
 from src import pox_yields
 from src import prices
+from src import roi
 from src import wallet_metrics
 from src import wallet_value
 
 
 LOGGER = logging.getLogger(__name__)
-SUPPORTED_ROI_WINDOWS: tuple[int, ...] = (30, 60, 90)
+SUPPORTED_ROI_WINDOWS: tuple[int, ...] = (15, 30, 60, 90, 180)
 
 
 NAV_LINKS: list[tuple[str, str, str]] = [
-    ("wallet", "Wallet", "/wallet/index.html"),
-    ("value", "Value", "/value/index.html"),
-    ("macro", "Macro", "/macro/index.html"),
-    ("coinbase", "Coinbase", "/coinbase/index.html"),
-    ("coinbase_replacement", "Coinbase Replacement", "/coinbase_replacement/index.html"),
-    ("scenarios", "Scenarios", "/scenarios/index.html"),
+    ("wallet", "Wallet", "wallet/index.html"),
+    ("value", "Value", "value/index.html"),
+    ("macro", "Macro", "macro/index.html"),
+    ("roi", "ROI", "roi/index.html"),
+    ("coinbase", "Coinbase", "coinbase/index.html"),
+    ("coinbase_replacement", "Coinbase Replacement", "coinbase_replacement/index.html"),
+    ("scenarios", "Scenarios", "scenarios/index.html"),
 ]
+
+RETENTION_BUCKET_BREAKS = [-0.1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 75, 100, 125]
+RETENTION_BUCKET_LABELS = [
+    "<5%",
+    "5-10%",
+    "10-15%",
+    "15-20%",
+    "20-25%",
+    "25-30%",
+    "30-35%",
+    "35-40%",
+    "40-45%",
+    "45-50%",
+    "50-55%",
+    "55-60%",
+    "60-75%",
+    "75-100%",
+    "100%+",
+]
+RETENTION_BUCKET_COLORS = [
+    "#5F0F99",
+    "#3C1DB8",
+    "#1F4FD1",
+    "#0C7DB2",
+    "#0EA37A",
+    "#6EB22E",
+    "#C7B929",
+    "#E48A1F",
+    "#D7541C",
+    "#B71C1C",
+    "#8E1B1B",
+    "#702020",
+    "#CD7F32",
+    "#C0C0C0",
+    "#FFD700",
+]
+RETENTION_BUCKET_NOTE = (
+    "Color bands: 0-5%, 5-10%, 10-15%, 15-20%, 20-25%, 25-30%, 30-35%, 35-40%, 40-45%, "
+    "45-50%, 50-55%, 55-60% (5-point steps), then 60-75% bronze, 75-100% silver, 100%+ gold."
+)
+RETENTION_COLOR_SCALE: list[tuple[float, str]] = []
+for idx, color in enumerate(RETENTION_BUCKET_COLORS):
+    start = idx / len(RETENTION_BUCKET_COLORS)
+    end = (idx + 1) / len(RETENTION_BUCKET_COLORS)
+    RETENTION_COLOR_SCALE.append((start, color))
+    RETENTION_COLOR_SCALE.append((end, color))
 
 BODY_RE = re.compile(r"<body[^>]*>(?P<body>.*)</body>", re.S | re.I)
 STYLE_RE = re.compile(r"<style[^>]*>.*?</style>", re.S | re.I)
@@ -222,6 +273,7 @@ def _write_html(
     *,
     active_nav: str | None = None,
     last_updated: datetime | None = None,
+    nav_prefix: str = "",
 ) -> None:
     """Wrap the provided HTML snippets in a basic document and write to disk."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -260,7 +312,11 @@ def _write_html(
             "  <strong style='margin-right: 1rem; color:#f5f6fa;'>Stacks Analytics</strong>",
         ]
         + [
-            f"  <a href='{href}'{' class=\"active\"' if active_nav == key else ''}>{label}</a>"
+            "  <a href='{href}'{active}>{label}</a>".format(
+                href=f"{nav_prefix}{href.lstrip('/')}",
+                active=" class='active'" if active_nav == key else "",
+                label=label,
+            )
             for key, label, href in NAV_LINKS
         ]
         + [
@@ -312,7 +368,305 @@ def _write_static_page(
         sections,
         active_nav=active_nav,
         last_updated=datetime.now(UTC),
+        nav_prefix="../",
     )
+
+
+def _format_number(value: float | int | None, *, decimals: int = 2) -> str:
+    if value is None:
+        return "—"
+    return f"{value:,.{decimals}f}"
+
+
+def _format_usd(value_stx: float | None, spot_price: float | None, as_of: datetime | None) -> str:
+    if value_stx is None or spot_price is None:
+        return ""
+    usd_value = value_stx * spot_price
+    if as_of:
+        return f"(~${usd_value:,.2f} @ {as_of:%Y-%m-%d})"
+    return f"(~${usd_value:,.2f})"
+
+
+def _format_stx_with_usd(
+    value_stx: float | None,
+    *,
+    spot_price: float | None,
+    as_of: datetime | None,
+    decimals: int = 2,
+) -> str:
+    base = _format_number(value_stx, decimals=decimals)
+    if base == "—" or spot_price is None or value_stx is None:
+        return f"{base} STX"
+    usd_text = _format_usd(value_stx, spot_price, as_of)
+    return f"{base} STX {usd_text}"
+
+
+def _load_spot_price() -> tuple[datetime | None, float | None]:
+    try:
+        ts, price = prices.load_spot_price("STX-USD")
+        return ts, price
+    except Exception as exc:  # pragma: no cover - logging only
+        LOGGER.warning("Failed to load spot STX price: %s", exc)
+        return None, None
+
+
+def render_kpi_cards(cards: Sequence[dict[str, str]]) -> str:
+    if not cards:
+        return "<p>No KPI data.</p>"
+    rows = ["<div class='section'>", "<h2>Key KPIs</h2>", "<div class='kpi-grid'>"]
+    for card in cards:
+        label = card.get("label", "")
+        tooltip = card.get("tooltip")
+        if tooltip:
+            label_html = f"<span title=\"{tooltip}\">{label}</span>"
+        else:
+            label_html = label
+        rows.append(
+            "\n".join(
+                [
+                    "<div class='kpi-card'>",
+                    f"  <div class='kpi-label'>{label_html}</div>",
+                    f"  <div class='kpi-value'>{card.get('value', '—')}</div>",
+                    f"  <div class='kpi-subtext'>{card.get('subtext', '')}</div>",
+                    "</div>",
+                ]
+            )
+        )
+    rows.append("</div></div>")
+    return "\n".join(rows)
+
+
+def _pivot_retention(
+    retention: pd.DataFrame, *, value_col: str = "retention_rate"
+) -> pd.DataFrame:
+    if retention.empty:
+        return pd.DataFrame()
+    pivot = retention.copy()
+    pivot["activation_date"] = pd.to_datetime(pivot["activation_date"], utc=True)
+    matrix = (
+        pivot.pivot(index="activation_date", columns="window_days", values=value_col)
+        .sort_index()
+    )
+    return matrix
+
+
+def _build_bucketed_heatmap(
+    matrix: pd.DataFrame, *, title: str, height: int | None = None
+) -> go.Figure | None:
+    if matrix.empty:
+        return None
+    ordered = matrix.sort_index()
+    values = ordered.to_numpy(dtype=float, copy=True)
+    values = np.where(np.isnan(values), np.nan, values)
+    series = pd.Series(values.ravel())
+    codes = (
+        pd.cut(
+            series,
+            bins=RETENTION_BUCKET_BREAKS,
+            labels=False,
+            include_lowest=True,
+        )
+        .to_numpy()
+        .reshape(values.shape)
+    )
+    mask = ~np.isnan(codes)
+    z_values = np.where(mask, codes, np.nan)
+
+    label_grid = np.full(values.shape, "No data", dtype=object)
+    if mask.any():
+        label_grid[mask] = [
+            RETENTION_BUCKET_LABELS[int(idx)] for idx in codes[mask].astype(int)
+        ]
+    text_matrix = np.full(values.shape, "", dtype=object)
+    if mask.any():
+        text_matrix[mask] = [
+            f"{int(round(val))}%"
+            for val in values[mask]
+        ]
+
+    customdata = np.empty(values.shape + (2,), dtype=object)
+    customdata[..., 0] = values
+    customdata[..., 1] = label_grid
+
+    x_labels = [f"{int(col)}d" for col in ordered.columns]
+    y_labels = [idx.strftime("%Y-%m-%d") for idx in ordered.index]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z_values,
+            x=x_labels,
+            y=y_labels,
+            colorscale=RETENTION_COLOR_SCALE,
+            zmin=-0.5,
+            zmax=len(RETENTION_BUCKET_COLORS) - 0.5,
+            text=text_matrix,
+            texttemplate="%{text}",
+            colorbar=dict(
+                title="Retention band",
+                tickmode="array",
+                tickvals=list(range(len(RETENTION_BUCKET_LABELS))),
+                ticktext=RETENTION_BUCKET_LABELS,
+            ),
+            customdata=customdata,
+            hovertemplate="<b>Cohort:</b> %{y}<br>"
+            "<b>Window:</b> %{x}<br>"
+            "<b>Retention:</b> %{customdata[0]:.1f}%<br>"
+            "<b>Band:</b> %{customdata[1]}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Retention Window",
+        yaxis_title="Activation Date",
+        template="plotly_dark",
+        height=height or max(320, 26 * len(y_labels) + 160),
+    )
+    return fig
+
+
+def render_retention_heatmap(retention: pd.DataFrame) -> str:
+    matrix = _pivot_retention(retention)
+    matrix = matrix * 100 if not matrix.empty else matrix
+    fig = _build_bucketed_heatmap(matrix, title="Activation-Aligned Retention (Active-Band)")
+    if fig is None:
+        return "<p>No retention data available.</p>"
+    return "\n".join(
+        [
+            "<div class='section'>",
+            "<h2>Retention</h2>",
+            "<p class='note'>Each cell shows the % of wallets in a cohort that transacted during the final 30 days (15 days for the 15d column) of the specified window. "
+            f"{RETENTION_BUCKET_NOTE}</p>",
+            pio.to_html(fig, include_plotlyjs="cdn", full_html=False),
+            "</div>",
+        ]
+    )
+
+
+def render_waltv_bars(summary: pd.DataFrame, *, spot_price: float | None, as_of: datetime | None) -> str:
+    # Until derived value and incentives are wired in, these “WALTV” plots are truly
+    # NV (fees paid). Keep the NV label in the UI so stakeholders aren’t confused
+    # and remove this note once WALTV diverges from NV.
+    if summary.empty:
+        return "<p>No NV data available.</p>"
+    summary = summary.sort_values("window_days")
+    labels = [f"{int(w)}d" for w in summary["window_days"]]
+    fig = go.Figure()
+    fig.add_bar(
+        x=labels,
+        y=summary["avg_all"],
+        name="All Wallets",
+        marker_color="#70e1ff",
+        hovertemplate="<b>Window:</b> %{x}<br><b>All Avg:</b> %{y:.3f} STX<extra></extra>",
+    )
+    fig.add_bar(
+        x=labels,
+        y=summary["avg_survivor"],
+        name="Survivors Only",
+        marker_color="#ffaf40",
+        hovertemplate="<b>Window:</b> %{x}<br><b>Survivor Avg:</b> %{y:.3f} STX<extra></extra>",
+    )
+    fig.update_layout(
+        barmode="group",
+        title="Average NV (All vs Survivors)",
+        xaxis_title="Window",
+        yaxis_title="Avg NV (STX)",
+        template="plotly_dark",
+        height=450,
+    )
+    table_df = summary.copy()
+    if spot_price is not None:
+        table_df["Avg NV (All wallets, USD)"] = table_df["avg_all"] * spot_price
+        table_df["Avg NV (Survivors, USD)"] = table_df["avg_survivor"] * spot_price
+    table_df = table_df.rename(
+        columns={
+            "window_days": "Window (d)",
+            "avg_all": "Avg NV (All wallets)",
+            "avg_survivor": "Avg NV (Survivors)",
+            "cohort_size": "Cohort Wallets Considered",
+        }
+    )
+    table = table_df.to_html(index=False, classes="summary-table", float_format=lambda x: f"{x:.4f}")
+    return "\n".join(
+        [
+            "<div class='section'>",
+            "<h2>Average NV (All vs Survivors)</h2>",
+            "<p class='note'>All-wallet averages include zeroes for inactive wallets; survivor averages only include wallets with activity in the trailing band of each window. NV currently equals WALTV because we have not applied derived value / incentives yet.</p>",
+            pio.to_html(fig, include_plotlyjs="cdn", full_html=False),
+            table,
+            "</div>",
+        ]
+    )
+
+
+def render_payback_table(
+    panel: pd.DataFrame,
+    *,
+    title: str,
+    spot_price: float | None,
+    as_of: datetime | None,
+) -> str:
+    # Payback math still uses WALTV columns internally but the UI shows NV labels
+    # because WALTV == NV (fees) right now. Switch the copy back when derived
+    # value/incentive adjustments land.
+    if panel.empty:
+        return "<p>No CAC/payback data available.</p>"
+    table = panel.copy()
+    table["activation_date"] = pd.to_datetime(
+        table["activation_date"], utc=True
+    ).dt.strftime("%Y-%m-%d")
+    if "payback_multiple" in table:
+        table["payback_multiple"] = table["payback_multiple"].apply(
+            lambda v: f"{v:.2f}" if pd.notna(v) else "—"
+        )
+    table = table.rename(
+        columns={
+            "avg_waltv_stx": "Avg NV (STX)",
+            "median_waltv_stx": "Median NV (STX)",
+            "wallets": "Wallets",
+            "cac_stx": "CAC (STX)",
+            "payback_multiple": "Payback Multiple",
+        }
+    )
+    if spot_price is not None:
+        table["Avg NV (USD)"] = table["Avg NV (STX)"].astype(float) * spot_price
+        table["CAC (USD)"] = table["CAC (STX)"].astype(float) * spot_price
+    html_table = table.to_html(index=False, classes="summary-table", float_format=lambda x: f"{x:.4f}")
+    return "\n".join(
+        [
+            "<div class='section'>",
+            f"<h2>{title}</h2>",
+            "<p class='note'>Payback Multiple = Avg NV (window) ÷ CAC. Values &gt; 1.0 indicate fees earned exceed acquisition cost at the stated horizon. Rename once WALTV diverges from NV.</p>"
+            + (
+                f"<p class='note'>Spot STX/USD ≈ ${spot_price:,.4f} as of {as_of:%Y-%m-%d %H:%M %Z}</p>"
+                if spot_price is not None and as_of is not None
+                else ""
+            ),
+            html_table,
+            "</div>",
+        ]
+    )
+
+
+def render_metric_glossary() -> str:
+    items = [
+        ("Activation-Aligned Retention", "Share of wallets with at least one qualifying tx during the trailing band (last 30d, or 15d for the 15-day window) at each horizon."),
+        ("Avg NV (All wallets)", "Cohort-size-weighted mean of cumulative STX fees for all wallets, including inactive ones. Rename back to WALTV once derived value and incentives land."),
+        ("Avg NV (Survivors)", "Mean NV among wallets that transacted in the trailing band of the horizon (\"still active\" cohort)."),
+        ("Expected NV-180", "Weighted average of NV-180 across cohorts that activated in the last 180d and have fully matured to 180d."),
+        ("Breakeven CPA", "Maximum STX you can spend per activation while still achieving ≥1.0x payback at 180 days (equal to Expected NV-180 today)."),
+        ("Payback Multiple", "Avg NV ÷ CAC for a channel/horizon. >1.0 means fees exceed acquisition cost."),
+        ("Active Wallets ≤/>180d", "Split of wallets with activity in the last 30 days, grouped by whether they activated within or more than 180 days ago."),
+    ]
+    rows = [
+        "<div class='section'>",
+        "<h2>Metric Definitions</h2>",
+        "<div style='background:#1f2840;padding:1rem;border-radius:8px;border:1px solid #2f354a;'>",
+        "<ul style='margin:0;padding-left:1.25rem;line-height:1.5;'>",
+    ]
+    for title, desc in items:
+        rows.append(f"<li><strong>{title}:</strong> {desc}</li>")
+    rows.extend(["</ul>", "</div>", "</div>"])
+    return "\n".join(rows)
 
 
 def build_wallet_dashboard(
@@ -324,9 +678,13 @@ def build_wallet_dashboard(
     wallet_db_path: Path | None = None,
     skip_history_sync: bool = False,
     last_updated: datetime | None = None,
+    spot_price: float | None = None,
+    spot_price_ts: datetime | None = None,
 ) -> None:
     """Generate the wallet growth dashboard HTML using cached Hiro transactions."""
     generated_at = last_updated or datetime.now(UTC)
+    if spot_price is None or spot_price_ts is None:
+        spot_price_ts, spot_price = _load_spot_price()
     if not skip_history_sync:
         wallet_metrics.ensure_transaction_history(
             max_days=max_days,
@@ -424,7 +782,24 @@ def build_wallet_dashboard(
         )
 
     summary_df = pd.DataFrame(summary_rows).sort_values("window_days")
-    summary_table_html = summary_df.fillna("—").to_html(index=False, classes="summary-table")
+    if spot_price is not None and not summary_df.empty:
+        summary_df["avg_fee_usd"] = summary_df["avg_fee_stx"].astype(float) * spot_price
+    summary_display = summary_df.rename(
+        columns={
+            "window_days": "Window (d)",
+            "new_wallets_trailing": "New Wallets (trailing)",
+            "active_wallets_trailing": "Active Wallets (trailing)",
+            "retention_cohort_date": "Retention Cohort Date",
+            "retention_rate_pct": "Retention Rate (%)",
+            "avg_fee_stx": "Avg Fee (STX)",
+            "wallets_observed": "Wallets Observed",
+        }
+    )
+    if "avg_fee_usd" in summary_df.columns:
+        summary_display["Avg Fee (USD)"] = summary_df["avg_fee_usd"]
+    summary_table_html = summary_display.fillna("—").to_html(
+        index=False, classes="summary-table", float_format=lambda x: f"{x:.2f}"
+    )
 
     # Add explanatory text for table metrics
     metric_definitions = """
@@ -434,9 +809,11 @@ def build_wallet_dashboard(
   • <strong>active_wallets_trailing:</strong> Count of unique addresses with any transaction activity in the trailing window<br/>
   • <strong>retention_cohort_date:</strong> Most recent cohort date used for retention analysis<br/>
   • <strong>retention_rate_pct:</strong> Percentage of wallets from the cohort still active after the window period<br/>
-  • <strong>avg_fee_stx:</strong> Average transaction fees paid per wallet (in STX) for the cohort<br/>
+  • <strong>avg_fee_stx:</strong> Average transaction fees paid per wallet (in STX) for the cohort{}<br/>
   • <strong>wallets_observed:</strong> Number of wallets with fee data available in the window
-</div>"""
+</div>""".format(
+        " (USD column estimated using latest STX/USD spot)" if spot_price is not None else ""
+    )
 
     daily_chart = pd.DataFrame()
     if not active_wallets.empty:
@@ -506,36 +883,17 @@ def build_wallet_dashboard(
 
     retention_html = ""
     if not retention.empty:
-        retention_matrix = (
-            retention.pivot(
-                index="activation_date",
-                columns="window_days",
-                values="retention_rate",
-            )
-            .sort_index()
-            * 100
-        )
+        retention_matrix = _pivot_retention(retention) * 100
         if not retention_matrix.empty:
-            fig_retention = go.Figure(
-                data=go.Heatmap(
-                    z=retention_matrix.values,
-                    x=[f"{col}-day" for col in retention_matrix.columns],
-                    y=[ts.strftime("%Y-%m-%d") for ts in retention_matrix.index],
-                    colorscale="Blues",
-                    colorbar=dict(title="Retention %"),
-                    zmin=0,
-                    zmax=100,
-                    hovertemplate="<b>Cohort Date:</b> %{y}<br><b>Window:</b> %{x}<br><b>Retention:</b> %{z:.1f}%<br><i>% of wallets from this cohort still active after window period</i><extra></extra>",
-                )
-            )
-            fig_retention.update_layout(
+            fig_retention = _build_bucketed_heatmap(
+                retention_matrix,
                 title="Retention by Activation Cohort",
-                xaxis_title="Retention Window",
-                yaxis_title="Activation Date",
-                template="plotly_dark",
                 height=400 + 12 * len(retention_matrix),
             )
-            retention_html = pio.to_html(fig_retention, include_plotlyjs="cdn", full_html=False)
+            if fig_retention is not None:
+                retention_html = pio.to_html(
+                    fig_retention, include_plotlyjs="cdn", full_html=False
+                )
 
     fee_html = ""
     if not fee_per_wallet.empty:
@@ -588,7 +946,14 @@ def build_wallet_dashboard(
         )
     if retention_html:
         sections.extend(
-            ["<div class='section'>", "<h2>Cohort Retention</h2>", retention_html, "</div>"]
+            [
+                "<div class='section'>",
+                "<h2>Cohort Retention</h2>",
+                "<p class='note'>Active-band retention (activity in final 15/30 days of each window). "
+                f"{RETENTION_BUCKET_NOTE}</p>",
+                retention_html,
+                "</div>",
+            ]
         )
     if fee_html:
         sections.extend(
@@ -603,6 +968,468 @@ def build_wallet_dashboard(
         sections,
         active_nav="wallet",
         last_updated=generated_at,
+        nav_prefix="../",
+    )
+
+
+# NOTE: Retention visualization mock-up. Not linked in production nav; keep for future experiments.
+def build_retention_demo_dashboard(
+    *,
+    output_path: Path,
+    max_days: int,
+    windows: Sequence[int],
+    force_refresh: bool,
+    wallet_db_path: Path | None = None,
+    skip_history_sync: bool = False,
+    cohorts_in_heatmap: int = 12,
+    recent_days_for_curve: int = 90,
+    timeline_days: int = 180,
+    active_mix_lookback_days: int = 60,
+) -> None:
+    """Generate a playground page with alternate retention visualizations.
+
+    This is intentionally a mock-up for experimentation. It is not linked in the
+    public navigation, but the CLI flag remains available so we can revive the
+    concept quickly when needed.
+    """
+
+    def _resolve_band(window: int) -> int:
+        return 15 if window <= 15 else 30
+
+    def _weighted_rate(data: pd.DataFrame) -> float | None:
+        total = float(data["cohort_size"].sum())
+        if total <= 0:
+            return None
+        return float((data["retention_rate"] * data["cohort_size"]).sum() / total)
+
+    def _render_compact_heatmap(retention_df: pd.DataFrame) -> str:
+        ordered = retention_df.sort_values("activation_date")
+        cohort_dates = (
+            ordered["activation_date"].drop_duplicates().sort_values().tail(cohorts_in_heatmap)
+        )
+        subset = ordered[ordered["activation_date"].isin(cohort_dates)]
+        matrix = _pivot_retention(subset, value_col="retention_pct")
+        if matrix.empty:
+            return ""
+        fig = _build_bucketed_heatmap(
+            matrix,
+            title="Compact Heatmap (last cohorts only)",
+        )
+        if fig is None:
+            return ""
+        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+
+    def _render_retention_curve(retention_df: pd.DataFrame) -> str:
+        if retention_df.empty:
+            return ""
+        cutoff = retention_df["activation_date"].max() - pd.Timedelta(days=recent_days_for_curve)
+        rows: list[dict[str, object]] = []
+        for window in windows:
+            window_df = retention_df[retention_df["window_days"] == window]
+            if window_df.empty:
+                continue
+            weighted_all = _weighted_rate(window_df)
+            recent_df = window_df[window_df["activation_date"] >= cutoff]
+            weighted_recent = _weighted_rate(recent_df) if not recent_df.empty else None
+            latest = window_df.sort_values("activation_date").iloc[-1]
+            rows.append(
+                {
+                    "window": window,
+                    "weighted_all": weighted_all * 100 if weighted_all is not None else None,
+                    "weighted_recent": weighted_recent * 100 if weighted_recent is not None else None,
+                    "latest_pct": float(latest["retention_rate"]) * 100,
+                    "latest_date": latest["activation_date"].strftime("%Y-%m-%d"),
+                }
+            )
+        curve_df = pd.DataFrame(rows)
+        if curve_df.empty:
+            return ""
+        fig = go.Figure()
+        if curve_df["weighted_all"].notna().any():
+            fig.add_scatter(
+                x=curve_df["window"],
+                y=curve_df["weighted_all"],
+                name="Weighted avg (all cohorts)",
+                mode="lines+markers",
+            )
+        if curve_df["weighted_recent"].notna().any():
+            fig.add_scatter(
+                x=curve_df["window"],
+                y=curve_df["weighted_recent"],
+                name=f"Weighted avg (last {recent_days_for_curve}d cohorts)",
+                mode="lines+markers",
+            )
+        fig.add_scatter(
+            x=curve_df["window"],
+            y=curve_df["latest_pct"],
+            mode="markers+text",
+            name="Latest cohort",
+            text=[
+                f"{row.latest_date}"
+                for row in curve_df.itertuples()
+            ],
+            textposition="top center",
+        )
+        fig.update_layout(
+            title="Aggregate Retention Curve",
+            xaxis_title="Window (days)",
+            yaxis_title="Retention %",
+            template="plotly_dark",
+            yaxis=dict(range=[0, 100]),
+        )
+        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+
+    def _render_band_timeline(retention_df: pd.DataFrame) -> str:
+        if retention_df.empty:
+            return ""
+        cutoff = retention_df["activation_date"].max() - pd.Timedelta(days=timeline_days)
+        scoped = retention_df[retention_df["activation_date"] >= cutoff]
+        if scoped.empty:
+            return ""
+        fig = go.Figure()
+        for window in windows:
+            window_df = scoped[scoped["window_days"] == window].sort_values("activation_date")
+            if window_df.empty:
+                continue
+            band = _resolve_band(window)
+            fig.add_trace(
+                go.Scatter(
+                    x=window_df["activation_date"],
+                    y=window_df["retention_pct"],
+                    mode="lines+markers",
+                    name=f"{window}-day window (band {band}d)",
+                    line=dict(width=2 if band == 15 else 4),
+                    hovertemplate=(
+                        f"<b>Cohort:</b> {{x|%Y-%m-%d}}<br><b>Window:</b> {window}d<br>"
+                        f"<b>Retention:</b> {{y:.1f}}%<br>"
+                        f"<i>Active if ≥1 tx in last {band} days</i><extra></extra>"
+                    ),
+                )
+            )
+        fig.update_layout(
+            title=f"Retention Timeline vs Active Band (last {timeline_days}d)",
+            xaxis_title="Activation Cohort",
+            yaxis_title="Retention %",
+            template="plotly_dark",
+            yaxis=dict(range=[0, 100]),
+        )
+        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+
+    def _render_cohort_strips(retention_df: pd.DataFrame) -> str:
+        def _with_mock_points(cohort_df: pd.DataFrame, cohort_date: pd.Timestamp) -> pd.DataFrame:
+            ordered = cohort_df.sort_values("window_days").copy()
+            ordered["is_mock"] = False
+            present_windows = ordered["window_days"].tolist()
+            if len(present_windows) >= 2:
+                return ordered
+            if ordered.empty:
+                return ordered
+            target_windows = [w for w in sorted(set(windows)) if w > present_windows[-1]]
+            if not target_windows:
+                return ordered
+            last_value = float(ordered.iloc[-1]["retention_pct"])
+            mock_rows: list[dict[str, object]] = []
+            decay = 0.85
+            for win in target_windows:
+                last_value = max(last_value * decay, 2.0)
+                mock_rows.append(
+                    {
+                        "activation_date": cohort_date,
+                        "window_days": win,
+                        "retention_pct": last_value,
+                        "is_mock": True,
+                    }
+                )
+            if mock_rows:
+                ordered = (
+                    pd.concat([ordered, pd.DataFrame(mock_rows)], ignore_index=True)
+                    .sort_values("window_days")
+                    .reset_index(drop=True)
+                )
+            return ordered
+
+        cohort_dates = (
+            retention_df["activation_date"]
+            .drop_duplicates()
+            .sort_values()
+            .tail(min(6, retention_df["activation_date"].nunique()))
+        )
+        if cohort_dates.empty:
+            return ""
+        fig = make_subplots(
+            rows=len(cohort_dates),
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            subplot_titles=[dt.strftime("%Y-%m-%d") for dt in cohort_dates],
+        )
+        for idx, cohort_date in enumerate(cohort_dates, start=1):
+            cohort_df = (
+                retention_df[retention_df["activation_date"] == cohort_date]
+                .sort_values("window_days")
+            )
+            if cohort_df.empty:
+                continue
+            augmented = _with_mock_points(cohort_df, cohort_date)
+            if augmented.empty:
+                continue
+            marker_symbols = [
+                "circle" if not is_mock else "diamond-open"
+                for is_mock in augmented["is_mock"]
+            ]
+            marker_colors = [
+                "#70e1ff" if not is_mock else "#ffaf40"
+                for is_mock in augmented["is_mock"]
+            ]
+            fig.add_trace(
+                go.Scatter(
+                    x=augmented["window_days"],
+                    y=augmented["retention_pct"],
+                    mode="lines+markers",
+                    marker=dict(size=8, symbol=marker_symbols, color=marker_colors),
+                    name=cohort_date.strftime("%Y-%m-%d"),
+                    showlegend=False,
+                    hovertemplate="<b>Window:</b> %{x}d<br><b>Retention:</b> %{y:.1f}%<extra></extra>",
+                ),
+                row=idx,
+                col=1,
+            )
+        fig.update_layout(
+            height=160 * len(cohort_dates) + 120,
+            template="plotly_dark",
+            title="Cohort Strips (sparkline view)",
+        )
+        fig.update_xaxes(title_text="Window (days)", row=len(cohort_dates), col=1)
+        fig.update_yaxes(range=[0, 100])
+        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+
+    def _render_survival_lines(retention_df: pd.DataFrame) -> str:
+        if retention_df.empty:
+            return ""
+        monthly = (
+            retention_df.assign(
+                activation_month=retention_df["activation_date"].dt.to_period("M").dt.to_timestamp()
+            )
+            .groupby(["activation_month", "window_days"])
+            .apply(_weighted_rate)
+            .reset_index(name="retention_rate")
+        )
+        if monthly.empty:
+            return ""
+        recent_months = (
+            monthly["activation_month"].drop_duplicates().sort_values().tail(4)
+        )
+        scoped = monthly[monthly["activation_month"].isin(recent_months)]
+        if scoped.empty:
+            return ""
+        fig = go.Figure()
+        for month in recent_months:
+            month_df = scoped[scoped["activation_month"] == month].sort_values("window_days")
+            if month_df.empty:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=month_df["window_days"],
+                    y=month_df["retention_rate"] * 100,
+                    mode="lines+markers",
+                    name=month.strftime("%Y-%m"),
+                    hovertemplate=(
+                        f"<b>Month:</b> {month.strftime('%Y-%m')}<br><b>Window:</b> {{x}}d<br>"
+                        "<b>Retention:</b> {{y:.1f}}%<extra></extra>"
+                    ),
+                )
+            )
+        fig.update_layout(
+            title="Survival-style Lines (monthly weighted cohorts)",
+            xaxis_title="Window (days)",
+            yaxis_title="Retention %",
+            yaxis=dict(range=[0, 100]),
+            template="plotly_dark",
+        )
+        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+
+    def _render_active_mix(activity_df: pd.DataFrame, first_seen_df: pd.DataFrame) -> str:
+        if activity_df.empty or first_seen_df.empty:
+            return ""
+        max_activity_date = activity_df["activity_date"].max()
+        if pd.isna(max_activity_date):
+            return ""
+        lookback_start = max_activity_date - pd.Timedelta(days=active_mix_lookback_days)
+        scoped = activity_df[activity_df["activity_date"] >= lookback_start].copy()
+        if scoped.empty:
+            return ""
+        merged = scoped.merge(first_seen_df[["address", "first_seen"]], on="address", how="left")
+        merged = merged.dropna(subset=["first_seen"])
+        if merged.empty:
+            return ""
+        merged["age_days"] = (merged["activity_date"] - merged["first_seen"].dt.floor("D")).dt.days
+        bins = [-1, 15, 30, 90, 180, 10_000]
+        labels = ["≤15d", "16-30d", "31-90d", "91-180d", ">180d"]
+        merged["age_bucket"] = pd.cut(merged["age_days"], bins=bins, labels=labels)
+        counts = (
+            merged.groupby(["activity_date", "age_bucket"])["address"]
+            .nunique()
+            .reset_index(name="active_wallets")
+        )
+        if counts.empty:
+            return ""
+        pivot = counts.pivot(index="activity_date", columns="age_bucket", values="active_wallets").fillna(0)
+        totals = pivot.sum(axis=1)
+        pivot = pivot[totals > 0]
+        if pivot.empty:
+            return ""
+        share = pivot.div(pivot.sum(axis=1), axis=0) * 100
+        fig = go.Figure()
+        for label in labels:
+            if label not in share.columns:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=share.index,
+                    y=share[label],
+                    mode="lines",
+                    stackgroup="one",
+                    name=label,
+                    hovertemplate=(
+                        f"<b>Date:</b> {{x|%Y-%m-%d}}<br><b>Age bucket:</b> {label}<br>"
+                        "<b>Share:</b> {{y:.1f}}%<extra></extra>"
+                    ),
+                )
+            )
+        fig.update_layout(
+            title=f"Active Base Age Mix (last {active_mix_lookback_days}d of activity)",
+            yaxis_title="Share of active wallets",
+            xaxis_title="Activity Date",
+            yaxis=dict(range=[0, 100]),
+            template="plotly_dark",
+        )
+        return pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+
+    generated_at = datetime.now(UTC)
+    windows = sorted(set(int(w) for w in windows if w > 0))
+    if not windows:
+        raise ValueError("At least one positive window is required to build the retention demo.")
+    if not skip_history_sync:
+        wallet_metrics.ensure_transaction_history(
+            max_days=max_days,
+            force_refresh=force_refresh,
+        )
+
+    activity = wallet_metrics.load_recent_wallet_activity(
+        max_days=max_days,
+        db_path=wallet_db_path,
+    )
+    first_seen = wallet_metrics.update_first_seen_cache(activity)
+    retention = wallet_metrics.compute_retention(
+        activity,
+        first_seen,
+        windows,
+        mode="active_band",
+    )
+
+    sections: list[str] = [
+        "<div class='section'>",
+        "<h1>Retention Visualization Playground</h1>",
+        "<p class='note'>Prototype layouts for evaluating active-band retention visuals without touching the primary dashboard.</p>",
+        "</div>",
+    ]
+
+    if retention.empty:
+        sections.append(
+            "<p>Retention data is not available for the requested history window. Try increasing --wallet-max-days or rerun the ingestion backfill.</p>"
+        )
+        _write_html(
+            output_path,
+            "Retention Visualization Playground",
+            sections,
+            active_nav="retention_demo",
+            last_updated=generated_at,
+            nav_prefix="../",
+        )
+        return
+
+    retention["retention_pct"] = retention["retention_rate"] * 100
+
+    heatmap_html = _render_compact_heatmap(retention)
+    curve_html = _render_retention_curve(retention)
+    timeline_html = _render_band_timeline(retention)
+    strips_html = _render_cohort_strips(retention)
+    survival_html = _render_survival_lines(retention)
+    active_mix_html = _render_active_mix(activity, first_seen)
+
+    if heatmap_html:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>1. Tiered layout: compact heatmap</h2>",
+                "<p class='note'>Shows the same data density as the wallet page but limits to recent cohorts. "
+                f"{RETENTION_BUCKET_NOTE}</p>",
+                heatmap_html,
+                "</div>",
+            ]
+        )
+    if curve_html:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>2. Aggregate retention curve</h2>",
+                "<p class='note'>Weighted averages turn the heatmap into a single curve so trend spotting is easier.</p>",
+                curve_html,
+                "</div>",
+            ]
+        )
+    if timeline_html:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>3. Retention band timeline</h2>",
+                "<p class='note'>Each line encodes the trailing band (15d vs 30d) via line weight to reinforce what “still active” means.</p>",
+                timeline_html,
+                "</div>",
+            ]
+        )
+    if strips_html:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>4. Cohort strips</h2>",
+                "<p class='note'>Sparkline rows make it easy to compare the latest cohorts side-by-side without scrolling a full heatmap. Diamond markers extend cohorts with mocked future points so you can preview the curve even before the real data matures.</p>",
+                strips_html,
+                "</div>",
+            ]
+        )
+    if survival_html:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>5. Survival-style lines</h2>",
+                "<p class='note'>Monthly weighted curves mimic survival plots and highlight slope changes at each horizon.</p>",
+                survival_html,
+                "</div>",
+            ]
+        )
+    if active_mix_html:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>6. Active base composition</h2>",
+                "<p class='note'>Shows whether today’s activity is dominated by fresh or long-tenured wallets.</p>",
+                active_mix_html,
+                "</div>",
+            ]
+        )
+
+    sections.append(
+        "<div class='section'><p class='note'>All charts reuse the existing wallet metrics dataset. Tweak parameters in build_retention_demo_dashboard to try different cohort windows or lookbacks.</p></div>"
+    )
+
+    _write_html(
+        output_path,
+        "Retention Visualization Playground",
+        sections,
+        active_nav="retention_demo",
+        last_updated=generated_at,
+        nav_prefix="../",
     )
 
 
@@ -897,6 +1724,7 @@ def build_macro_dashboard(
         macro_sections,
         active_nav="macro",
         last_updated=generated_at,
+        nav_prefix="../",
     )
 
 
@@ -1033,9 +1861,13 @@ def build_value_dashboard(
     wallet_db_path: Path | None = None,
     skip_history_sync: bool = False,
     cpa_target_stx: float = 5.0,
+    spot_price: float | None = None,
+    spot_price_ts: datetime | None = None,
 ) -> None:
     """Generate CPI/CPA-style wallet value dashboard with PoX linkage."""
     generated_at = datetime.now(UTC)
+    if spot_price is None or spot_price_ts is None:
+        spot_price_ts, spot_price = _load_spot_price()
     data = wallet_value.compute_value_pipeline(
         max_days=max_days,
         windows=windows,
@@ -1113,11 +1945,14 @@ def build_value_dashboard(
     sections: list[str] = []
     sections.append("<div class='section'>")
     sections.append("<h1>Stacks Wallet Value Dashboard</h1>")
+    usd_hint = ""
+    if spot_price is not None and spot_price_ts is not None:
+        usd_hint = f" Spot STX/USD ≈ ${spot_price:,.4f} (as of {spot_price_ts:%Y-%m-%d %H:%M %Z})."
     sections.append(
         "<p class='note'>Network Value (NV) computed as STX fees converted to BTC using "
         "historical STX/BTC prices nearest to each transaction timestamp. "
         "WALTV currently equals NV (no incentives/derived added yet). "
-        f"Updated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>"
+        f"Updated {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.{usd_hint}</p>"
     )
     # Add classification definitions for clarity at the top of the page.
     thr = wallet_value.ClassificationThresholds()
@@ -1137,19 +1972,24 @@ def build_value_dashboard(
             return f"{value:,.1f}{suffix}"
         return f"{value:.4f}{suffix}"
 
+    def _fmt_stx_value(value: float | None) -> str:
+        return _format_stx_with_usd(
+            value, spot_price=spot_price, as_of=spot_price_ts, decimals=2
+        )
+
     sections.append("<div class='section'>")
     sections.append("<div class='kpi-grid'>")
     sections.append(
-        f"<div class='kpi-card'><div class='kpi-label'>30d Network Value</div><div class='kpi-value'>{_fmt(kpis['total_nv_btc'], ' BTC')}</div><div class='kpi-subtext'>{_fmt(kpis['total_fee_stx'], ' STX fees')}</div></div>"
+        f"<div class='kpi-card'><div class='kpi-label'>30d Network Value</div><div class='kpi-value'>{_fmt(kpis['total_nv_btc'], ' BTC')}</div><div class='kpi-subtext'>{_fmt_stx_value(kpis['total_fee_stx'])}</div></div>"
     )
     sections.append(
-        f"<div class='kpi-card'><div class='kpi-label'>Avg WALTV-30</div><div class='kpi-value'>{_fmt(kpis['avg_waltv_stx'], ' STX')}</div><div class='kpi-subtext'>Median {_fmt(kpis['median_waltv_stx'], ' STX')}</div></div>"
+        f"<div class='kpi-card'><div class='kpi-label'>Avg WALTV-30</div><div class='kpi-value'>{_fmt_stx_value(kpis['avg_waltv_stx'])}</div><div class='kpi-subtext'>Median {_fmt_stx_value(kpis['median_waltv_stx'])}</div></div>"
     )
     # Trailing 30-day average across all wallets (calendar-anchored)
     ts30 = trailing_stats.get(30, {})
     if ts30 and ts30.get("wallets", 0) > 0:
         sections.append(
-            f"<div class='kpi-card'><div class='kpi-label'>Avg Last-30</div><div class='kpi-value'>{_fmt(ts30.get('avg_last_stx', 0.0), ' STX')}</div><div class='kpi-subtext'>Median {_fmt(ts30.get('median_last_stx', 0.0), ' STX')}</div></div>"
+            f"<div class='kpi-card'><div class='kpi-label'>Avg Last-30</div><div class='kpi-value'>{_fmt_stx_value(ts30.get('avg_last_stx', 0.0))}</div><div class='kpi-subtext'>Median {_fmt_stx_value(ts30.get('median_last_stx', 0.0))}</div></div>"
         )
     sections.append(
         f"<div class='kpi-card'><div class='kpi-label'>Funded → Value</div><div class='kpi-value'>{_fmt(kpis['value_pct'], '%')}</div><div class='kpi-subtext'>Active {_fmt(kpis['active_pct'], '%')} | Funded {kpis['funded_wallets']}</div></div>"
@@ -1162,16 +2002,16 @@ def build_value_dashboard(
         if stats and stats["wallets"] > 0:
             sections.append(
                 f"<div class='kpi-card'><div class='kpi-label'>Avg WALTV-{extra_window}</div>"
-                f"<div class='kpi-value'>{_fmt(stats['avg_waltv_stx'], ' STX')}</div>"
-                f"<div class='kpi-subtext'>Median {_fmt(stats['median_waltv_stx'], ' STX')}</div></div>"
+                f"<div class='kpi-value'>{_fmt_stx_value(stats['avg_waltv_stx'])}</div>"
+                f"<div class='kpi-subtext'>Median {_fmt_stx_value(stats['median_waltv_stx'])}</div></div>"
             )
         # Add trailing counterpart
         tstats = trailing_stats.get(extra_window, {})
         if tstats and tstats.get("wallets", 0) > 0:
             sections.append(
                 f"<div class='kpi-card'><div class='kpi-label'>Avg Last-{extra_window}</div>"
-                f"<div class='kpi-value'>{_fmt(tstats.get('avg_last_stx', 0.0), ' STX')}</div>"
-                f"<div class='kpi-subtext'>Median {_fmt(tstats.get('median_last_stx', 0.0), ' STX')}</div></div>"
+                f"<div class='kpi-value'>{_fmt_stx_value(tstats.get('avg_last_stx', 0.0))}</div>"
+                f"<div class='kpi-subtext'>Median {_fmt_stx_value(tstats.get('median_last_stx', 0.0))}</div></div>"
             )
     if pox_summary.get("apy_btc_median") is not None:
         sections.append(
@@ -1286,11 +2126,21 @@ def build_value_dashboard(
                 "above_target": "≥ Target",
             }
         )
+        if spot_price is not None:
+            cpa_table[f"Avg WALTV-{roi_window} (USD)"] = (
+                cpa_table[f"Avg WALTV-{roi_window} (STX)"].astype(float) * spot_price
+            )
+            cpa_table[f"Median WALTV-{roi_window} (USD)"] = (
+                cpa_table[f"Median WALTV-{roi_window} (STX)"].astype(float) * spot_price
+            )
+        target_note = f"Target CPA: {cpa_target_stx} STX"
+        if spot_price is not None:
+            target_note += f" (~${cpa_target_stx * spot_price:,.2f})"
         sections.extend(
             [
                 "<div class='section'>",
                 f"<h2>ROI & CPA Signal ({roi_window}d)</h2>",
-                f"<p class='note'>Target CPA: {cpa_target_stx} STX. Payback multiple compares WALTV-{roi_window} to the target.</p>",
+                f"<p class='note'>{target_note}. Payback multiple compares WALTV-{roi_window} to the target.</p>",
                 pio.to_html(cpa_fig, include_plotlyjs="cdn", full_html=False),
                 cpa_table.to_html(index=False),
                 "</div>",
@@ -1313,11 +2163,15 @@ def build_value_dashboard(
         )
     if window_rows:
         window_table = pd.DataFrame(window_rows)
+        if spot_price is not None:
+            window_table["Avg WALTV (USD)"] = window_table["Avg WALTV (STX)"].astype(float) * spot_price
+            window_table["Median WALTV (USD)"] = window_table["Median WALTV (STX)"].astype(float) * spot_price
+            window_table["Total Fees (USD)"] = window_table["Total Fees (STX)"].astype(float) * spot_price
         sections.extend(
             [
                 "<div class='section'>",
                 "<h2>WALTV Window Comparison</h2>",
-                window_table.to_html(index=False),
+                window_table.to_html(index=False, float_format=lambda x: f"{x:.4f}"),
                 "</div>",
             ]
         )
@@ -1349,12 +2203,15 @@ def build_value_dashboard(
             )
         if comp_rows:
             comp_df = pd.DataFrame(comp_rows)
+            if spot_price is not None:
+                comp_df["WALTV Avg (USD)"] = comp_df["WALTV Avg (STX)"].astype(float) * spot_price
+                comp_df["Last Avg (USD)"] = comp_df["Last Avg (STX)"].astype(float) * spot_price
             sections.extend(
                 [
                     "<div class='section'>",
                     "<h2>Activation vs Trailing</h2>",
                     "<p class='note'>WALTV-N measures the first N days after activation; Last-N measures the most recent N days regardless of activation date.</p>",
-                    comp_df.to_html(index=False),
+                    comp_df.to_html(index=False, float_format=lambda x: f"{x:.4f}"),
                     "</div>",
                 ]
             )
@@ -1473,9 +2330,12 @@ def build_value_dashboard(
                 hovertemplate="<b>Cohort:</b> %{x}<br><b>Avg WALTV-30:</b> %{y:.4f} STX<br>"
                 + "<i>Median and wallets count in table below</i><extra></extra>"
             )
+            if spot_price is not None:
+                cohort_fee["Avg USD"] = cohort_fee["avg"] * spot_price
+                cohort_fee["Median USD"] = cohort_fee["median"] * spot_price
             table_html = cohort_fee.rename(
                 columns={"avg": "Avg STX", "median": "Median STX", "wallets": "Wallets"}
-            ).to_html(index=False)
+            ).to_html(index=False, float_format=lambda x: f"{x:.4f}")
             sections.extend(
                 [
                     "<div class='section'>",
@@ -1491,6 +2351,189 @@ def build_value_dashboard(
         sections,
         active_nav="value",
         last_updated=generated_at,
+        nav_prefix="../",
+    )
+
+
+def build_roi_dashboard(
+    *,
+    output_path: Path,
+    max_days: int,
+    windows: Sequence[int],
+    force_refresh: bool,
+    wallet_db_path: Path | None = None,
+    skip_history_sync: bool = False,
+    cac_file: Path | None = None,
+    channel_map_file: Path | None = None,
+    incentives_file: Path | None = None,
+    ensure_wallet_balances: bool = False,
+    spot_price: float | None = None,
+    spot_price_ts: datetime | None = None,
+) -> None:
+    """Generate the ROI one-pager dashboard."""
+    generated_at = datetime.now(UTC)
+    if spot_price is None or spot_price_ts is None:
+        spot_price_ts, spot_price = _load_spot_price()
+
+    inputs = roi.build_inputs(
+        max_days=max_days,
+        windows=windows,
+        force_refresh=force_refresh,
+        wallet_db_path=wallet_db_path,
+        skip_history_sync=skip_history_sync,
+        ensure_balances=ensure_wallet_balances,
+    )
+
+    retention = inputs.retention
+    waltv_all = roi.summarize_waltv_by_window(inputs.windows_agg, inputs.first_seen)
+    survivors = roi.waltv_survivors_only(inputs.windows_agg)
+    expected_180 = roi.expected_waltv_180(
+        inputs.windows_agg, inputs.first_seen, horizon_days=180, recent_activation_days=180
+    )
+    active_breakdown = roi.active_base_breakdown(inputs.activity, inputs.first_seen)
+
+    window_rollups: list[dict[str, float]] = []
+    if not waltv_all.empty:
+        for window in sorted(waltv_all["window_days"].unique()):
+            subset = waltv_all[waltv_all["window_days"] == window]
+            if subset.empty:
+                continue
+            total_fee = subset["total_fee_stx"].sum()
+            total_cohort = subset["cohort_size"].sum()
+            if not total_cohort:
+                continue
+            avg_all = total_fee / total_cohort
+            survivor_subset = survivors[survivors["window_days"] == window]
+            survivor_wallets = survivor_subset["survivor_wallets"].sum()
+            if survivor_wallets:
+                avg_survivor = (
+                    (
+                        survivor_subset["avg_waltv_survivors_stx"]
+                        * survivor_subset["survivor_wallets"]
+                    ).sum()
+                    / survivor_wallets
+                )
+            else:
+                avg_survivor = 0.0
+            window_rollups.append(
+                {
+                    "window_days": window,
+                    "avg_all": avg_all,
+                    "avg_survivor": avg_survivor,
+                    "cohort_size": total_cohort,
+                }
+            )
+    window_summary = pd.DataFrame(window_rollups)
+
+    cards: list[dict[str, str]] = []
+    cards.append(
+        {
+            "label": "Expected NV-180",
+            "value": _format_stx_with_usd(
+                expected_180, spot_price=spot_price, as_of=spot_price_ts
+            ),
+            "subtext": "Weighted Avg (last 180d activations, fully matured)",
+            "tooltip": "Cohort-size-weighted NV (fees paid) across cohorts activated in the last 180 days that have completely reached 180 days of activity. Rename back to WALTV once derived/incentive data lands.",
+        }
+    )
+    cards.append(
+        {
+            "label": "Breakeven CPA @180d (NV)",
+            "value": _format_stx_with_usd(
+                expected_180, spot_price=spot_price, as_of=spot_price_ts
+            ),
+            "subtext": "Spend ≤ this STX to hit payback 1.0",
+            "tooltip": "Maximum acquisition cost per wallet that still yields a 1.0x payback at 180 days; numerically equal to Expected NV-180 until WALTV diverges from NV.",
+        }
+    )
+    young_wallets = active_breakdown.get("young_wallets", 0)
+    legacy_wallets = active_breakdown.get("legacy_wallets", 0)
+    total_active_wallets = young_wallets + legacy_wallets
+    young_pct = (
+        young_wallets / total_active_wallets * 100 if total_active_wallets else 0.0
+    )
+    legacy_pct = (
+        legacy_wallets / total_active_wallets * 100 if total_active_wallets else 0.0
+    )
+    cards.append(
+        {
+            "label": "Active Wallets ≤180d",
+            "value": f"{young_wallets} ({young_pct:.1f}%)",
+            "subtext": "Share of active base in last 30d",
+            "tooltip": "Wallets with activity in the last 30 days and activation time ≤180 days ago.",
+        }
+    )
+    cards.append(
+        {
+            "label": "Active Wallets >180d",
+            "value": f"{legacy_wallets} ({legacy_pct:.1f}%)",
+            "subtext": "Legacy share of last-30d active base",
+            "tooltip": "Wallets with last-30d activity that activated more than 180 days ago.",
+        }
+    )
+
+    sections: list[str] = []
+    sections.append(render_kpi_cards(cards))
+    sections.append(render_retention_heatmap(retention))
+    sections.append(
+        render_waltv_bars(window_summary, spot_price=spot_price, as_of=spot_price_ts)
+    )
+
+    payback_panel = pd.DataFrame()
+    channel_map_df = None
+    cac_map = None
+    if channel_map_file and channel_map_file.exists():
+        channel_map_df = external_inputs.load_address_channel_map(channel_map_file)
+    if cac_file and cac_file.exists():
+        cac_map = external_inputs.load_cac_by_channel(cac_file)
+    if channel_map_df is not None:
+        payback_panel = wallet_value.compute_cpa_panel_by_channel(
+            inputs.windows_agg,
+            channel_map_df,
+            window_days=180,
+            cac_by_channel=cac_map,
+        )
+    if not payback_panel.empty:
+        sections.append(
+            render_payback_table(
+                payback_panel,
+                title="Payback vs CAC (180d cohorts)",
+                spot_price=spot_price,
+                as_of=spot_price_ts,
+            )
+        )
+    else:
+        guardrail = (
+            "<div class='section'>"
+            # The ROI spec requires transparent messaging when CAC/channel files are
+            # missing; this card keeps the breakeven CPA visible so finance still
+            # has a guardrail even without per-channel payback.
+            "<h2>Payback vs CAC</h2>"
+            f"<p class='note'>Provide --cac-file (channel,cac_stx) and --channel-map-file "
+            "(address,activation_date,channel) to render channel payback multiples. "
+            f"Until then, use the Breakeven CPA (1.0x) benchmark below.</p>"
+            f"<div class='kpi-card' style='max-width:260px;'>"
+            "<div class='kpi-label'>Breakeven CPA @180d (NV)</div>"
+            f"<div class='kpi-value'>{_format_number(expected_180)} STX</div>"
+            f"<div class='kpi-subtext'>Spend per activation that keeps payback ≥ 1.0 {_format_usd(expected_180, spot_price, spot_price_ts)}</div>"
+            "</div>"
+            "</div>"
+        )
+        sections.append(guardrail)
+
+    if incentives_file and incentives_file.exists():
+        # Validate schema even if unused; will be consumed in future iterations.
+        external_inputs.load_incentives(incentives_file)
+
+    sections.append(render_metric_glossary())
+
+    _write_html(
+        output_path,
+        "Stacks ROI One-Pager",
+        sections,
+        active_nav="roi",
+        last_updated=generated_at,
+        nav_prefix="../",
     )
 
 
@@ -1556,12 +2599,56 @@ def main() -> None:
         default=5.0,
         help="Target STX WALTV for CPA payback comparisons (must be > 0).",
     )
+    parser.add_argument(
+        "--one-pager-only",
+        action="store_true",
+        help="Build only the ROI one-pager dashboard.",
+    )
+    parser.add_argument(
+        "--roi-windows",
+        type=int,
+        nargs="+",
+        default=list(SUPPORTED_ROI_WINDOWS),
+        help="Activation windows for ROI dashboard (days).",
+    )
+    parser.add_argument(
+        "--cac-file",
+        type=Path,
+        help="CSV with channel,cac_stx columns to compute payback multiples.",
+    )
+    parser.add_argument(
+        "--channel-map-file",
+        type=Path,
+        help="CSV with address,activation_date,channel columns for attribution.",
+    )
+    parser.add_argument(
+        "--incentives-file",
+        type=Path,
+        help="CSV with address,paid_date,amount_stx columns for incentives (optional).",
+    )
+    parser.add_argument(
+        "--ensure-wallet-balances",
+        action="store_true",
+        help="Refresh funded balances for recent activations before building ROI dashboards (defaults to off to avoid Hiro rate-limits).",
+    )
+    parser.add_argument(
+        "--retention-demo",
+        action="store_true",
+        help="Also build the retention visualization playground.",
+    )
+    parser.add_argument(
+        "--retention-demo-only",
+        action="store_true",
+        help="Skip other dashboards and only build the retention visualization playground.",
+    )
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     wallet_html = args.out_dir / "wallet_dashboard.html"
     macro_html = args.out_dir / "macro_dashboard.html"
     value_html = args.out_dir / "wallet_value_dashboard.html"
+    roi_html = args.out_dir / "roi_dashboard.html"
+    retention_demo_html = args.out_dir / "retention_demo.html"
 
     wallet_db_path = args.wallet_db_path
     skip_history_sync = args.skip_wallet_history_sync
@@ -1578,11 +2665,26 @@ def main() -> None:
         )
         skip_history_sync = True
 
+    spot_price_ts, spot_price = _load_spot_price()
+
     try:
         built_wallet = False
         built_macro = False
+        built_value = False
+        built_roi = False
+        built_retention_demo = False
 
-        if not args.value_only:
+        build_wallet = (
+            not args.value_only and not args.one_pager_only and not args.retention_demo_only
+        )
+        build_macro = (
+            not args.value_only and not args.one_pager_only and not args.retention_demo_only
+        )
+        build_value = not args.one_pager_only and not args.retention_demo_only
+        build_roi = not args.retention_demo_only
+        build_retention_demo = args.retention_demo or args.retention_demo_only
+
+        if build_wallet:
             build_wallet_dashboard(
                 output_path=wallet_html,
                 max_days=args.wallet_max_days,
@@ -1590,26 +2692,60 @@ def main() -> None:
                 force_refresh=args.force_refresh,
                 wallet_db_path=wallet_db_path,
                 skip_history_sync=skip_history_sync,
+                spot_price=spot_price,
+                spot_price_ts=spot_price_ts,
             )
             built_wallet = True
 
-        build_value_dashboard(
-            output_path=value_html,
-            max_days=args.wallet_max_days,
-            windows=args.value_windows,
-            force_refresh=args.force_refresh,
-            wallet_db_path=wallet_db_path,
-            skip_history_sync=skip_history_sync,
-            cpa_target_stx=args.cpa_target_stx,
-        )
+        if build_value:
+            build_value_dashboard(
+                output_path=value_html,
+                max_days=args.wallet_max_days,
+                windows=args.value_windows,
+                force_refresh=args.force_refresh,
+                wallet_db_path=wallet_db_path,
+                skip_history_sync=skip_history_sync,
+                cpa_target_stx=args.cpa_target_stx,
+                spot_price=spot_price,
+                spot_price_ts=spot_price_ts,
+            )
+            built_value = True
 
-        if not args.value_only:
+        if build_macro:
             build_macro_dashboard(
                 output_path=macro_html,
                 history_days=args.macro_history_days,
                 force_refresh=args.force_refresh,
             )
             built_macro = True
+
+        if build_roi:
+            build_roi_dashboard(
+                output_path=roi_html,
+                max_days=args.wallet_max_days,
+                windows=args.roi_windows,
+                force_refresh=args.force_refresh,
+                wallet_db_path=wallet_db_path,
+                skip_history_sync=skip_history_sync,
+                cac_file=args.cac_file,
+                channel_map_file=args.channel_map_file,
+                incentives_file=args.incentives_file,
+                ensure_wallet_balances=args.ensure_wallet_balances,
+                spot_price=spot_price,
+                spot_price_ts=spot_price_ts,
+            )
+            built_roi = True
+
+        if build_retention_demo:
+            build_retention_demo_dashboard(
+                output_path=retention_demo_html,
+                max_days=args.wallet_max_days,
+                windows=args.roi_windows,
+                force_refresh=args.force_refresh,
+                wallet_db_path=wallet_db_path,
+                skip_history_sync=skip_history_sync,
+            )
+            built_retention_demo = True
     finally:
         if snapshot_path is not None and snapshot_path.exists():
             snapshot_path.unlink()
@@ -1617,22 +2753,35 @@ def main() -> None:
 
     # Copy dashboards into public structure for deployment.
     if args.public_dir:
-        if not args.value_only and built_wallet:
+        if built_wallet:
             wallet_public = args.public_dir / "wallet" / "index.html"
             wallet_public.parent.mkdir(parents=True, exist_ok=True)
             wallet_public.write_text(wallet_html.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"Copied {wallet_html} -> {wallet_public}")
 
-        if not args.value_only and built_macro:
+        if built_macro:
             macro_public = args.public_dir / "macro" / "index.html"
             macro_public.parent.mkdir(parents=True, exist_ok=True)
             macro_public.write_text(macro_html.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"Copied {macro_html} -> {macro_public}")
 
-        value_public = args.public_dir / "value" / "index.html"
-        value_public.parent.mkdir(parents=True, exist_ok=True)
-        value_public.write_text(value_html.read_text(encoding="utf-8"), encoding="utf-8")
-        print(f"Copied {value_html} -> {value_public}")
+        if built_value:
+            value_public = args.public_dir / "value" / "index.html"
+            value_public.parent.mkdir(parents=True, exist_ok=True)
+            value_public.write_text(value_html.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"Copied {value_html} -> {value_public}")
+
+        if built_roi:
+            roi_public = args.public_dir / "roi" / "index.html"
+            roi_public.parent.mkdir(parents=True, exist_ok=True)
+            roi_public.write_text(roi_html.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"Copied {roi_html} -> {roi_public}")
+
+        if built_retention_demo:
+            retention_public = args.public_dir / "retention_demo" / "index.html"
+            retention_public.parent.mkdir(parents=True, exist_ok=True)
+            retention_public.write_text(retention_demo_html.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"Copied {retention_demo_html} -> {retention_public}")
 
         copy_static_assets(args.public_dir)
         build_public_index(args.public_dir)

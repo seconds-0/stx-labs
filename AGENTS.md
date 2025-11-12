@@ -30,6 +30,7 @@
 | Backfill (background/tmux) | `./scripts/backfill_tmux.sh start` or `make backfill-tmux` |
 | Wallet value dashboard | `python scripts/build_dashboards.py --value-only --wallet-max-days 365 --wallet-windows 15 30 60 90 --wallet-db-snapshot --cpa-target-stx 5` |
 | Full dashboards | `python scripts/build_dashboards.py --wallet-max-days 365 --wallet-db-snapshot --public-dir public` |
+| ROI one-pager | `python scripts/build_dashboards.py --one-pager-only --wallet-max-days 365 --roi-windows 15 30 60 90 180 --wallet-db-snapshot [--cac-file ... --channel-map-file ...]` |
 | Sync `.env` | `./scripts/sync_env.sh` |
 | Beads CLI | `bd ready`, `bd show <id>`, `bd update <id> --status ...` |
 
@@ -37,6 +38,8 @@
 - `--wallet-db-snapshot` clones `wallet_metrics.duckdb` for read-only runs when the main backfill holds a lock.
 - `--value-only` skips the wallet/macro dashboards to focus on WALTV updates.
 - `--cpa-target-stx` controls the WALTV payback panels (default 5 STX). Document the chosen target in PRs.
+- ROI dash defaults to activation windows `15/30/60/90/180` and follows `docs/roi_one_pager_spec.md`. Provide CAC/channel CSVs when you want the payback table to populate; otherwise the page shows the breakeven CPA KPI for context.
+- `--ensure-wallet-balances` is optional on ROI builds; enable it before deploys when you need fresh funded counts, but leave it off for routine runs to avoid Hiro API rate-limits.
 
 **Backfill workflow**
 1. Confirm `.env` present (HIRO_API_KEY) via `./scripts/sync_env.sh`.
@@ -50,22 +53,37 @@
 - Every new module/function must have pytest coverage (`tests/test_<module>.py`). Mock external APIs (Hiro, Signal21).
 - WALTV features: accompany dashboard changes with unit tests in `tests/test_wallet_value.py`.
 - Keep WALTV vs CPA assumptions explicit in PR description (target STX, snapshot usage, etc.).
+- For ROI-specific work, align with `docs/roi_one_pager_spec.md` (active-band retention, survivor averages, CAC fallback messaging) and update that spec/runbooks whenever the KPI definitions change.
 - Never hit live APIs from tests; rely on fixtures/stubs.
 
 ## 4. Git, Beads, and Worktrees
 - Use Conventional Commits with bead IDs (e.g., `feat: add wallet value KPIs (bd-123)`).
+- Commit extremely frequently (small, reviewable diffs) so we can rewind quickly if needed; treat every meaningful step as a checkpoint.
 - Keep commits narrow; data artifacts only when reproducible.
 - Track work in beads CLI. `bd ready` before picking tasks; update status when delivering.
 - **Worktrees:** see “Git Worktree Management” below. Critical: `.env` and caches are not shared; run `./scripts/sync_env.sh` after creating or before merging.
 - Prefer feature branches per bead (`git checkout -b feat/value-dashboard-aug`). Push early/often.
 
+## 7. Deploying to Vercel
+
+- We wrap the static dashboards with a minimal Next.js shell so Edge Middleware can enforce the password gate.
+- Verify `.vercel/project.json` points at `projectName: "stx-labs"` under the `seconds0-projects` team (`npx vercel link --scope seconds0-projects --yes` to relink if needed).
+- Production deploy command (run from repo root, after `npm run build` succeeds locally):
+  ```
+  AUTH_PASSWORD_SALT=… AUTH_PASSWORD_HASH=… AUTH_SESSION_SECRET=… npx vercel deploy --prod --archive=tgz
+  ```
+  (Use the same env var values configured in Vercel; `--archive=tgz` keeps the upload within limits.)
+- Expected output includes `Production: https://stx-labs-<hash>-seconds0-projects.vercel.app`; alias as needed in the Vercel dashboard.
+- After any middleware change, redeploy and ensure the password page loads; if the CLI complains about permissions, confirm the Git author email has access to the Vercel team.
+
 ## 5. Agent Checklist
 1. Run `bd ready` → pick issue → branch.
 2. Ensure `.env` + `.venv` exist; `make setup`.
 3. For wallet work: check DuckDB coverage (`check_backfill_status`). If lacking, coordinate long backfill run.
-4. Implement + tests (`make test`). For dashboards, regenerate HTML locally (value-only snapshot allowed if backfill active).
-5. Update docs/runbooks when workflows change (README + relevant files).
-6. Provide summary, validation commands, and next steps in final response.
+4. Refresh wallet balance snapshots before dashboards (`python scripts/update_wallet_balances.py --max-days 120`) so funded counts stay accurate.
+5. Implement + tests (`make test`). For dashboards, regenerate HTML locally (value-only snapshot allowed if backfill active).
+6. Update docs/runbooks when workflows change (README + relevant files).
+7. Provide summary, validation commands, and next steps in final response.
 
 ## 6. Git Worktree Management
 (unchanged, but crucial for multi-branch workflows.)
