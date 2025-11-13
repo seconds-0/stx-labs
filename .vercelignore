@@ -1,0 +1,15 @@
+.venv/
+.conductor/
+node_modules/
+data/
+out/
+stx_labs.db
+*.duckdb
+*.db
+*.sqlite
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.beads/
+.claude/
+*.log

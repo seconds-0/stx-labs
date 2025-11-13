@@ -438,16 +438,33 @@ def render_kpi_cards(cards: Sequence[dict[str, str]]) -> str:
 
 
 def _pivot_retention(
-    retention: pd.DataFrame, *, value_col: str = "retention_rate"
+    retention: pd.DataFrame, *, value_col: str = "retention_rate", freq: str = "D"
 ) -> pd.DataFrame:
     if retention.empty:
         return pd.DataFrame()
     pivot = retention.copy()
     pivot["activation_date"] = pd.to_datetime(pivot["activation_date"], utc=True)
-    matrix = (
-        pivot.pivot(index="activation_date", columns="window_days", values=value_col)
-        .sort_index()
-    )
+    if freq == "W":
+        pivot["activation_bucket"] = (
+            pivot["activation_date"].dt.to_period("W-SUN").dt.to_timestamp()
+        )
+        grouped = (
+            pivot.groupby(["activation_bucket", "window_days"])
+            .apply(
+                lambda df: np.average(
+                    df[value_col], weights=df.get("cohort_size", 1.0)
+                )
+            )
+            .reset_index(name=value_col)
+        )
+        matrix = grouped.pivot(
+            index="activation_bucket", columns="window_days", values=value_col
+        ).sort_index()
+    else:
+        matrix = (
+            pivot.pivot(index="activation_date", columns="window_days", values=value_col)
+            .sort_index()
+        )
     return matrix
 
 
@@ -526,22 +543,57 @@ def _build_bucketed_heatmap(
 
 
 def render_retention_heatmap(retention: pd.DataFrame) -> str:
-    matrix = _pivot_retention(retention)
-    matrix = matrix * 100 if not matrix.empty else matrix
-    fig = _build_bucketed_heatmap(matrix, title="Activation-Aligned Retention (Active-Band)")
-    if fig is None:
+    if retention.empty:
         return "<p>No retention data available.</p>"
-    return "\n".join(
-        [
-            "<div class='section'>",
-            "<h2>Retention</h2>",
-            "<p class='note'>Each cell shows the share of a cohort that was still transacting inside the final activity band "
-            "(15 days for the 15d horizon, 30 days for the rest). "
-            f"{RETENTION_BUCKET_NOTE}</p>",
-            pio.to_html(fig, include_plotlyjs="cdn", full_html=False),
-            "</div>",
-        ]
+    daily_matrix = _pivot_retention(retention) * 100
+    weekly_matrix = _pivot_retention(retention, freq="W") * 100
+    daily_fig = _build_bucketed_heatmap(
+        daily_matrix, title="Retention by Activation Date (Daily)"
     )
+    weekly_fig = _build_bucketed_heatmap(
+        weekly_matrix, title="Retention by Activation Week (Sunday buckets)"
+    )
+    if daily_fig is None and weekly_fig is None:
+        return "<p>No retention data available.</p>"
+    toggle_controls = """
+    <div class='retention-toggle'>
+      <label><input type="radio" name="retention-view" value="daily" checked /> Daily cohorts</label>
+      <label><input type="radio" name="retention-view" value="weekly" /> Weekly cohorts</label>
+    </div>
+    <script>
+      (function() {
+        const radios = document.querySelectorAll('input[name="retention-view"]');
+        const daily = document.getElementById('retention-daily');
+        const weekly = document.getElementById('retention-weekly');
+        function sync(view) {
+          if (daily) daily.style.display = view === 'daily' ? 'block' : 'none';
+          if (weekly) weekly.style.display = view === 'weekly' ? 'block' : 'none';
+        }
+        radios.forEach((radio) => {
+          radio.addEventListener('change', (event) => sync(event.target.value));
+        });
+        sync('daily');
+      })();
+    </script>
+    """
+    sections = [
+        "<div class='section'>",
+        "<h2>Retention</h2>",
+        "<p class='note'>Each cell shows the share of a cohort that was active inside the final tracking band "
+        "(15 days for the 15d horizon, 30 days for all others). "
+        f"{RETENTION_BUCKET_NOTE}</p>",
+        toggle_controls,
+    ]
+    if daily_fig is not None:
+        sections.append(
+            f"<div id='retention-daily'>{pio.to_html(daily_fig, include_plotlyjs='cdn', full_html=False)}</div>"
+        )
+    if weekly_fig is not None:
+        sections.append(
+            f"<div id='retention-weekly' style='display:none;'>{pio.to_html(weekly_fig, include_plotlyjs=False, full_html=False)}</div>"
+        )
+    sections.append("</div>")
+    return "\n".join(sections)
 
 
 def render_waltv_bars(summary: pd.DataFrame, *, spot_price: float | None, as_of: datetime | None) -> str:
@@ -887,17 +939,7 @@ def build_wallet_dashboard(
 
     retention_html = ""
     if not retention.empty:
-        retention_matrix = _pivot_retention(retention) * 100
-        if not retention_matrix.empty:
-            fig_retention = _build_bucketed_heatmap(
-                retention_matrix,
-                title="Retention by Activation Cohort",
-                height=400 + 12 * len(retention_matrix),
-            )
-            if fig_retention is not None:
-                retention_html = pio.to_html(
-                    fig_retention, include_plotlyjs="cdn", full_html=False
-                )
+        retention_html = render_retention_heatmap(retention)
 
     fee_html = ""
     if not fee_per_wallet.empty:
@@ -2283,6 +2325,7 @@ def build_value_dashboard(
             [
                 "<div class='section'>",
                 "<h2>PoX Linkage</h2>",
+                "<p class='note'>Under construction: APY calibration is being redone in a separate task, so treat these values as provisional.</p>",
                 f"<p class='note'>{pox_summary_text}</p>",
                 pio.to_html(pox_fig, include_plotlyjs="cdn", full_html=False),
                 pox_table.to_html(index=False),
@@ -2294,6 +2337,7 @@ def build_value_dashboard(
             [
                 "<div class='section'>",
                 "<h2>PoX Linkage</h2>",
+                "<p class='note'>Under construction: APY calibration is being redone in a separate task, so treat these values as provisional.</p>",
                 f"<p class='note'>{pox_summary_text}</p>",
                 "</div>",
             ]
