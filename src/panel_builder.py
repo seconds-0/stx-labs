@@ -153,9 +153,14 @@ def annotate_panel_with_yields(
     # Fetch rewards aggregated by cycle
     rewards_df = pox_yields.aggregate_rewards_by_cycle(force_refresh=force_refresh)
 
+    prices_df = pox_yields.compute_cycle_price_averages(
+        cycles_df, force_refresh=force_refresh
+    )
+
     # Calculate APY metrics
-    # Note: We pass None for prices_df here since we'll use the panel's existing prices
-    apy_df = pox_yields.calculate_cycle_apy(cycles_df, rewards_df, prices_df=None)
+    apy_df = pox_yields.calculate_cycle_apy(
+        cycles_df, rewards_df, prices_df=prices_df
+    )
 
     # Map burn_block_heights to PoX cycles
     panel = cycle_utils.map_burn_heights_to_cycles(

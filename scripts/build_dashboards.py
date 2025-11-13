@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import secrets
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,9 +43,6 @@ NAV_LINKS: list[tuple[str, str, str]] = [
     ("wallet", "Wallet", "wallet/index.html"),
     ("value", "Value", "value/index.html"),
     ("macro", "Macro", "macro/index.html"),
-    ("coinbase", "Coinbase", "coinbase/index.html"),
-    ("coinbase_replacement", "Coinbase Replacement", "coinbase_replacement/index.html"),
-    ("scenarios", "Scenarios", "scenarios/index.html"),
 ]
 DEFAULT_NAV_KEY = NAV_LINKS[0][0]
 
@@ -542,9 +540,15 @@ def _build_bucketed_heatmap(
     return fig
 
 
-def render_retention_heatmap(retention: pd.DataFrame) -> str:
+def render_retention_heatmap(
+    retention: pd.DataFrame, *, section_id: str | None = None
+) -> str:
     if retention.empty:
         return "<p>No retention data available.</p>"
+    section_slug = section_id or secrets.token_hex(4)
+    toggle_name = f"retention-view-{section_slug}"
+    daily_div_id = f"{section_slug}-daily"
+    weekly_div_id = f"{section_slug}-weekly"
     daily_matrix = _pivot_retention(retention) * 100
     weekly_matrix = _pivot_retention(retention, freq="W") * 100
     daily_fig = _build_bucketed_heatmap(
@@ -555,25 +559,27 @@ def render_retention_heatmap(retention: pd.DataFrame) -> str:
     )
     if daily_fig is None and weekly_fig is None:
         return "<p>No retention data available.</p>"
-    toggle_controls = """
+    toggle_controls = f"""
     <div class='retention-toggle'>
-      <label><input type="radio" name="retention-view" value="daily" checked /> Daily cohorts</label>
-      <label><input type="radio" name="retention-view" value="weekly" /> Weekly cohorts</label>
+      <label><input type="radio" name="{toggle_name}" value="daily" checked /> Daily cohorts</label>
+      <label><input type="radio" name="{toggle_name}" value="weekly" /> Weekly cohorts</label>
     </div>
+    """
+    toggle_script = f"""
     <script>
-      (function() {
-        const radios = document.querySelectorAll('input[name="retention-view"]');
-        const daily = document.getElementById('retention-daily');
-        const weekly = document.getElementById('retention-weekly');
-        function sync(view) {
+      (function() {{
+        const radios = document.querySelectorAll('input[name="{toggle_name}"]');
+        const daily = document.getElementById('{daily_div_id}');
+        const weekly = document.getElementById('{weekly_div_id}');
+        function sync(view) {{
           if (daily) daily.style.display = view === 'daily' ? 'block' : 'none';
           if (weekly) weekly.style.display = view === 'weekly' ? 'block' : 'none';
-        }
-        radios.forEach((radio) => {
+        }}
+        radios.forEach((radio) => {{
           radio.addEventListener('change', (event) => sync(event.target.value));
-        });
+        }});
         sync('daily');
-      })();
+      }})();
     </script>
     """
     sections = [
@@ -586,12 +592,13 @@ def render_retention_heatmap(retention: pd.DataFrame) -> str:
     ]
     if daily_fig is not None:
         sections.append(
-            f"<div id='retention-daily'>{pio.to_html(daily_fig, include_plotlyjs='cdn', full_html=False)}</div>"
+            f"<div id='{daily_div_id}'>{pio.to_html(daily_fig, include_plotlyjs='cdn', full_html=False)}</div>"
         )
     if weekly_fig is not None:
         sections.append(
-            f"<div id='retention-weekly' style='display:none;'>{pio.to_html(weekly_fig, include_plotlyjs=False, full_html=False)}</div>"
+            f"<div id='{weekly_div_id}' style='display:none;'>{pio.to_html(weekly_fig, include_plotlyjs=False, full_html=False)}</div>"
         )
+    sections.append(toggle_script)
     sections.append("</div>")
     return "\n".join(sections)
 
@@ -939,7 +946,7 @@ def build_wallet_dashboard(
 
     retention_html = ""
     if not retention.empty:
-        retention_html = render_retention_heatmap(retention)
+        retention_html = render_retention_heatmap(retention, section_id="wallet-retention")
 
     fee_html = ""
     if not fee_per_wallet.empty:
@@ -1980,7 +1987,17 @@ def build_value_dashboard(
         )
         cycles_df = pox_yields.fetch_pox_cycles_data(force_refresh=force_refresh)
         rewards_df = pox_yields.aggregate_rewards_by_cycle(force_refresh=force_refresh)
-        cycle_apy_df = pox_yields.calculate_cycle_apy(cycles_df, rewards_df)
+        price_window_cycles = max(cycles_df["cycle_number"].max() - 32, cycles_df["cycle_number"].min())
+        prices_df = pox_yields.compute_cycle_price_averages(
+            cycles_df,
+            start_cycle=price_window_cycles,
+            force_refresh=force_refresh,
+        )
+        cycle_apy_df = pox_yields.calculate_cycle_apy(
+            cycles_df,
+            rewards_df,
+            prices_df=prices_df,
+        )
     except Exception as exc:
         LOGGER.warning("PoX data unavailable: %s", exc)
         pox_summary = {}
@@ -2538,7 +2555,7 @@ def build_roi_dashboard(
 
     sections: list[str] = []
     sections.append(render_kpi_cards(cards))
-    sections.append(render_retention_heatmap(retention))
+    sections.append(render_retention_heatmap(retention, section_id="roi-retention"))
     sections.append(
         render_waltv_bars(window_summary, spot_price=spot_price, as_of=spot_price_ts)
     )

@@ -87,7 +87,8 @@ Outputs land in `out/roi_dashboard.html` and copy to `public/roi/index.html` whe
   The snapshot is deleted automatically after the run.
 - **CPA Target:** `--cpa-target-stx` controls the payback panel threshold (default 5 STX).
 - **Dashboard Content:** The value dashboard now surfaces:
-  - KPI header (30d NV, WALTV stats, funded→value conversion, PoX APY snapshot).
+- KPI header (30d NV, WALTV stats, funded→value conversion, PoX APY snapshot).
+  - PoX APY uses per-cycle STX/BTC averages so the percentage is BTC-denominated and comparable to alternative yields.
   - Trailing KPIs: Last‑30/60/90 (calendar-anchored) avg/median, alongside WALTV‑30/60/90 (activation-anchored) with deltas.
   - Network trend (30d rolling NV vs fees).
   - ROI/CPA panels for 30/60/90d WALTV relative to the CPA target.

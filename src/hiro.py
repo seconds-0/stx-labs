@@ -23,6 +23,7 @@ from .http_utils import (
 
 BURNCHAIN_REWARDS_ENDPOINT = f"{HIRO_BASE}/extended/v1/burnchain/rewards"
 BLOCK_BY_BURN_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/block/by_burn_block_height"
+BLOCK_BY_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/block/by_height"
 POX_CYCLES_ENDPOINT = f"{HIRO_BASE}/extended/v2/pox/cycles"
 TX_BY_BLOCK_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx/block_height"
 TRANSACTION_HISTORY_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx"
@@ -219,6 +220,24 @@ def fetch_block_by_burn_height(
     return cached_json_request(
         RequestOptions(
             prefix="hiro_block_burn",
+            session=_hiro_session(),
+            method="GET",
+            url=url,
+            force_refresh=force_refresh,
+        )
+    )
+
+
+def fetch_block_by_height(
+    block_height: int,
+    *,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    """Fetch canonical Stacks block details by Stacks block height."""
+    url = f"{BLOCK_BY_HEIGHT_ENDPOINT}/{block_height}"
+    return cached_json_request(
+        RequestOptions(
+            prefix="hiro_block_height",
             session=_hiro_session(),
             method="GET",
             url=url,

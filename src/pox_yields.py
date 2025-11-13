@@ -11,6 +11,8 @@ Ref: docs/yield_competitiveness_implementation_plan.md
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict
 
@@ -19,8 +21,9 @@ import pandas as pd
 from . import config as cfg
 from . import cycle_utils
 from . import pox_constants as const
+from . import prices
 from .cache_utils import read_parquet, write_parquet
-from .hiro import aggregate_rewards_by_burn_block, list_pox_cycles
+from .hiro import aggregate_rewards_by_burn_block, fetch_block_by_height, list_pox_cycles
 
 # Legacy constants (kept for backwards compatibility, prefer pox_constants.*)
 DEFAULT_CIRCULATING_SUPPLY_USTX = const.DEFAULT_CIRCULATING_SUPPLY_USTX
@@ -30,6 +33,9 @@ DAYS_PER_YEAR = const.DAYS_PER_YEAR
 
 POX_YIELDS_CACHE_DIR = cfg.CACHE_DIR / "pox_yields"
 POX_YIELDS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CYCLE_BURN_HEIGHTS_CACHE = POX_YIELDS_CACHE_DIR / "cycle_burn_heights.parquet"
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _pox_cycles_cache_path() -> Path:
@@ -45,6 +51,157 @@ def _aggregate_rewards_by_cycle_cache_path(
     if start_cycle is not None or end_cycle is not None:
         label = f"{start_cycle or 'min'}_{end_cycle or 'max'}"
     return POX_YIELDS_CACHE_DIR / f"rewards_by_cycle_{label}.parquet"
+
+
+def _load_cycle_burn_cache() -> pd.DataFrame:
+    cached = read_parquet(CYCLE_BURN_HEIGHTS_CACHE)
+    if cached is None:
+        return pd.DataFrame(
+            columns=["stack_block_height", "burn_block_height", "burn_block_time"],
+        )
+    if "burn_block_time" not in cached.columns:
+        cached["burn_block_time"] = pd.NA
+    cached["stack_block_height"] = cached["stack_block_height"].astype(int)
+    cached["burn_block_height"] = cached["burn_block_height"].astype(int)
+    cached["burn_block_time"] = pd.to_numeric(
+        cached["burn_block_time"], errors="coerce"
+    ).astype("Int64")
+    return cached
+
+
+def _persist_cycle_burn_cache(df: pd.DataFrame) -> None:
+    if df.empty:
+        CYCLE_BURN_HEIGHTS_CACHE.unlink(missing_ok=True)
+        return
+    write_parquet(CYCLE_BURN_HEIGHTS_CACHE, df)
+
+
+def _attach_cycle_burn_heights(
+    cycles_df: pd.DataFrame, *, force_refresh: bool
+) -> pd.DataFrame:
+    """Ensure each cycle row has a burn_block_height derived from Stack heights."""
+    if "stack_block_height" not in cycles_df.columns:
+        cycles_df = cycles_df.rename(columns={"block_height": "stack_block_height"})
+
+    cache_df = pd.DataFrame(
+        columns=["stack_block_height", "burn_block_height", "burn_block_time"]
+    )
+    if not force_refresh:
+        cache_df = _load_cycle_burn_cache()
+
+    known_heights = set(cache_df["stack_block_height"].tolist())
+    requested_heights = {
+        int(h)
+        for h in cycles_df["stack_block_height"].dropna().astype(int).tolist()
+        if int(h) not in known_heights
+    }
+
+    if requested_heights:
+        new_records: list[dict[str, int]] = []
+        for height in sorted(requested_heights):
+            try:
+                payload = fetch_block_by_height(height, force_refresh=force_refresh)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                LOGGER.warning("Failed to fetch block metadata for height %s: %s", height, exc)
+                continue
+            burn_height = payload.get("burn_block_height")
+            if burn_height is None:
+                LOGGER.warning("Missing burn_block_height for stack height %s", height)
+                continue
+            new_records.append(
+                {
+                    "stack_block_height": int(height),
+                    "burn_block_height": int(burn_height),
+                    "burn_block_time": int(payload.get("burn_block_time", 0) or 0),
+                }
+            )
+        if new_records:
+            new_df = pd.DataFrame(new_records)
+            cache_df = (
+                pd.concat([cache_df, new_df], ignore_index=True)
+                .drop_duplicates(subset=["stack_block_height"], keep="last")
+                .sort_values("stack_block_height")
+            )
+            _persist_cycle_burn_cache(cache_df)
+
+    merged = cycles_df.merge(
+        cache_df,
+        on="stack_block_height",
+        how="left",
+    )
+    merged["burn_block_height"] = pd.to_numeric(
+        merged["burn_block_height"], errors="coerce"
+    )
+    merged["burn_block_time"] = pd.to_numeric(
+        merged["burn_block_time"], errors="coerce"
+    )
+    merged["block_height"] = merged["burn_block_height"].fillna(
+        merged["stack_block_height"]
+    )
+    return merged
+
+
+def compute_cycle_price_averages(
+    cycles_df: pd.DataFrame,
+    *,
+    start_cycle: int | None = None,
+    end_cycle: int | None = None,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Return average STX/USD, BTC/USD, and STX/BTC per cycle."""
+    if "burn_block_time" not in cycles_df.columns:
+        return pd.DataFrame(
+            columns=["cycle_number", "stx_usd_avg", "btc_usd_avg", "stx_btc_avg"]
+        )
+
+    filtered = cycles_df.copy()
+    if start_cycle is not None:
+        filtered = filtered[filtered["cycle_number"] >= start_cycle]
+    if end_cycle is not None:
+        filtered = filtered[filtered["cycle_number"] <= end_cycle]
+
+    if filtered.empty:
+        return pd.DataFrame(
+            columns=["cycle_number", "stx_usd_avg", "btc_usd_avg", "stx_btc_avg"]
+        )
+
+    filtered = filtered.sort_values("cycle_number").reset_index(drop=True)
+    filtered["start_ts"] = pd.to_datetime(
+        filtered["burn_block_time"], unit="s", utc=True
+    )
+    filtered["end_ts"] = filtered["start_ts"].shift(-1)
+    filtered.loc[filtered.index[-1], "end_ts"] = filtered.loc[
+        filtered.index[-1], "start_ts"
+    ] + timedelta(days=POX_CYCLE_DAYS)
+
+    price_start = filtered["start_ts"].min().to_pydatetime()
+    price_end = filtered["end_ts"].max().to_pydatetime()
+
+    price_panel = prices.load_price_panel(
+        price_start,
+        price_end,
+        frequency="4h",
+        force_refresh=force_refresh,
+    )
+    price_panel["ts"] = pd.to_datetime(price_panel["ts"], utc=True)
+
+    records: list[dict[str, float | int]] = []
+    for _, row in filtered.iterrows():
+        start_ts = row["start_ts"]
+        end_ts = row["end_ts"]
+        mask = (price_panel["ts"] >= start_ts) & (price_panel["ts"] < end_ts)
+        subset = price_panel.loc[mask]
+        if subset.empty:
+            continue
+        records.append(
+            {
+                "cycle_number": int(row["cycle_number"]),
+                "stx_usd_avg": float(subset["stx_usd"].mean()),
+                "btc_usd_avg": float(subset["btc_usd"].mean()),
+                "stx_btc_avg": float(subset["stx_btc"].mean()),
+            }
+        )
+    return pd.DataFrame(records)
 
 
 def calculate_apy_btc(
@@ -98,7 +255,8 @@ def fetch_pox_cycles_data(*, force_refresh: bool = False) -> pd.DataFrame:
 
     Retrieves cycle information including:
     - cycle_number
-    - block_height (cycle start)
+    - stack_block_height (Stacks chain height at cycle start)
+    - block_height (burn block height at cycle start)
     - total_weight
     - total_stacked_amount (total STX stacked in microSTX)
     - total_signers
@@ -115,7 +273,7 @@ def fetch_pox_cycles_data(*, force_refresh: bool = False) -> pd.DataFrame:
 
     if not force_refresh:
         cached = read_parquet(cache_path)
-        if cached is not None:
+        if cached is not None and "stack_block_height" in cached.columns:
             return cached
 
     # Use existing hiro.list_pox_cycles() function
@@ -129,8 +287,17 @@ def fetch_pox_cycles_data(*, force_refresh: bool = False) -> pd.DataFrame:
                 "total_weight",
                 "total_stacked_amount",
                 "total_signers",
+                "stack_block_height",
             ]
         )
+
+    # Preserve original Stacks block height and derive burn heights
+    if "block_height" in cycles_df.columns:
+        cycles_df = cycles_df.rename(columns={"block_height": "stack_block_height"})
+        cycles_df["stack_block_height"] = pd.to_numeric(
+            cycles_df["stack_block_height"], errors="coerce"
+        )
+    cycles_df = _attach_cycle_burn_heights(cycles_df, force_refresh=force_refresh)
 
     # Ensure numeric types
     if "total_stacked_amount" in cycles_df.columns:
@@ -217,8 +384,22 @@ def aggregate_rewards_by_cycle(
     # Note: Each cycle has block_height (start) but we need end too
     # For now, aggregate all rewards and map to cycles by burn_block_height
 
-    # Get all rewards (use existing hiro function)
-    rewards_df = aggregate_rewards_by_burn_block(force_refresh=force_refresh)
+    # Determine burn height bounds for requested cycles to minimize API calls
+    start_height = int(filtered_cycles["block_height"].min())
+    next_cycle_mask = cycles_df["block_height"] > filtered_cycles["block_height"].max()
+    next_cycle = (
+        cycles_df[next_cycle_mask].sort_values("block_height").head(1)
+    )
+    end_height = None
+    if not next_cycle.empty:
+        end_height = int(next_cycle["block_height"].iloc[0] - 1)
+
+    # Get rewards within the requested burn height range
+    rewards_df = aggregate_rewards_by_burn_block(
+        start_height=start_height,
+        end_height=end_height,
+        force_refresh=force_refresh,
+    )
 
     if rewards_df.empty:
         return pd.DataFrame(
@@ -331,20 +512,29 @@ def calculate_cycle_apy(
     # If prices provided, calculate USD APY
     if (
         prices_df is not None
-        and "stx_usd_avg" in prices_df.columns
-        and "btc_usd_avg" in prices_df.columns
+        and "cycle_number" in prices_df.columns
     ):
+        price_cols = ["stx_usd_avg", "btc_usd_avg", "stx_btc_avg"]
+        missing_cols = [col for col in price_cols if col not in prices_df.columns]
+        if missing_cols:
+            raise ValueError(
+                f"prices_df missing required columns: {', '.join(missing_cols)}"
+            )
         merged = merged.merge(
-            prices_df[["cycle_number", "stx_usd_avg", "btc_usd_avg"]],
+            prices_df[["cycle_number", "stx_usd_avg", "btc_usd_avg", "stx_btc_avg"]],
             on="cycle_number",
             how="left",
         )
 
-        # USD APY = BTC APY * (BTC price / STX price)
-        merged["apy_usd"] = (
-            merged["apy_btc"] * (merged["btc_usd_avg"] / merged["stx_usd_avg"])
-        ).round(2)
+        denom = const.SATS_PER_BTC * merged["stx_btc_avg"]
+        mask = denom.notna() & (denom > 0)
+        merged.loc[mask, "apy_btc"] = (
+            merged.loc[mask, "apy_btc"] / denom.loc[mask]
+        )
+        merged["apy_btc"] = merged["apy_btc"].round(2)
+        merged["apy_usd"] = merged["apy_btc"]
     else:
+        merged["apy_btc"] = merged["apy_btc"].round(2)
         merged["apy_usd"] = None
 
     # Rename for clarity
@@ -408,10 +598,38 @@ def get_cycle_yield_summary(
     """
     # Fetch data
     cycles_df = fetch_pox_cycles_data(force_refresh=force_refresh)
-    rewards_df = aggregate_rewards_by_cycle(force_refresh=force_refresh)
+    if cycles_df.empty:
+        return {
+            "cycles_analyzed": 0,
+            "apy_btc_mean": None,
+            "apy_btc_median": None,
+            "apy_btc_std": None,
+            "apy_btc_min": None,
+            "apy_btc_max": None,
+            "participation_rate_mean": None,
+        }
+
+    max_cycle = int(cycles_df["cycle_number"].max())
+    min_cycle = max(
+        int(cycles_df["cycle_number"].min()),
+        max_cycle - (last_n_cycles * 2),
+    )
+
+    rewards_df = aggregate_rewards_by_cycle(
+        start_cycle=min_cycle,
+        end_cycle=max_cycle,
+        force_refresh=force_refresh,
+    )
+
+    prices_df = compute_cycle_price_averages(
+        cycles_df,
+        start_cycle=min_cycle,
+        end_cycle=max_cycle,
+        force_refresh=force_refresh,
+    )
 
     # Calculate APY
-    apy_df = calculate_cycle_apy(cycles_df, rewards_df)
+    apy_df = calculate_cycle_apy(cycles_df, rewards_df, prices_df=prices_df)
 
     # Take last N cycles
     recent = apy_df.sort_values("cycle_number", ascending=False).head(last_n_cycles)
