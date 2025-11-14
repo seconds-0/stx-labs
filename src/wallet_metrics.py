@@ -24,10 +24,23 @@ WALLET_CACHE_DIR = cfg.CACHE_DIR / "wallet_metrics"
 WALLET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 FIRST_SEEN_CACHE_PATH = WALLET_CACHE_DIR / "first_seen_wallets.parquet"
+FUNDED_D0_CACHE_PATH = WALLET_CACHE_DIR / "wallet_funded_d0.parquet"
+SEGMENTED_RETENTION_PATH = WALLET_CACHE_DIR / "retention_segmented.parquet"
+METRICS_DATA_START = pd.Timestamp("2024-12-23T00:00:00Z")
 MICROSTX_PER_STX = 1_000_000
 TRANSACTION_PAGE_LIMIT = 50
 DEFAULT_MAX_PAGES = 10_000
 DUCKDB_PATH = cfg.DUCKDB_PATH
+FUNDED_D0_COLUMNS = [
+    "address",
+    "activation_date",
+    "funded_d0",
+    "balance_ustx",
+    "snapshot_version",
+    "has_snapshot",
+    "ingested_at",
+    "updated_at",
+]
 
 
 def _utc_now() -> datetime:
@@ -78,6 +91,26 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
         );
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS retention_segmented (
+            window_days INTEGER,
+            segment VARCHAR,
+            retained_users BIGINT,
+            eligible_users BIGINT,
+            retention_pct DOUBLE,
+            anchor_window_days INTEGER,
+            updated_at TIMESTAMP,
+            PRIMARY KEY (window_days, segment)
+        );
+        """
+    )
+    try:
+        conn.execute(
+            "ALTER TABLE retention_segmented ADD COLUMN anchor_window_days INTEGER"
+        )
+    except duckdb.CatalogException:
+        pass
 
 
 def _prepare_transactions(results: list[dict[str, Any]]) -> pd.DataFrame:
@@ -575,6 +608,8 @@ def load_recent_wallet_activity(
     df["address"] = df["address"].astype(str)
     df = df[df["address"].notna()]
     df["activity_date"] = df["block_time"].dt.floor("D")
+    coverage_cutoff = METRICS_DATA_START.floor("D")
+    df = df[df["activity_date"] >= coverage_cutoff]
     df = df[
         [
             "tx_id",
@@ -609,7 +644,8 @@ def load_first_seen_cache() -> pd.DataFrame:
         return pd.DataFrame(columns=["address", "first_seen"])
     cached["first_seen"] = pd.to_datetime(cached["first_seen"], utc=True)
     cached["address"] = cached["address"].astype(str)
-    return cached
+    cached = cached[cached["first_seen"] >= METRICS_DATA_START]
+    return cached.reset_index(drop=True)
 
 
 def update_first_seen_cache(activity: pd.DataFrame) -> pd.DataFrame:
@@ -627,8 +663,517 @@ def update_first_seen_cache(activity: pd.DataFrame) -> pd.DataFrame:
     combined = combined.sort_values("first_seen").drop_duplicates(
         subset=["address"], keep="first"
     )
+    combined["first_seen"] = pd.to_datetime(combined["first_seen"], utc=True)
+    combined = combined[combined["first_seen"] >= METRICS_DATA_START]
     write_parquet(FIRST_SEEN_CACHE_PATH, combined)
     return combined
+
+
+def _load_funded_d0_cache() -> pd.DataFrame:
+    cached = read_parquet(FUNDED_D0_CACHE_PATH)
+    if cached is None:
+        return pd.DataFrame(columns=FUNDED_D0_COLUMNS)
+    frame = cached.copy()
+    frame["activation_date"] = pd.to_datetime(frame["activation_date"], utc=True)
+    frame["snapshot_version"] = pd.to_datetime(frame["snapshot_version"], utc=True)
+    if "ingested_at" in frame.columns:
+        frame["ingested_at"] = pd.to_datetime(frame["ingested_at"], utc=True)
+    if "updated_at" in frame.columns:
+        frame["updated_at"] = pd.to_datetime(frame["updated_at"], utc=True)
+    frame["address"] = frame["address"].astype(str)
+    return frame
+
+
+def _activation_frame(first_seen: pd.DataFrame) -> pd.DataFrame:
+    if first_seen.empty:
+        return pd.DataFrame(columns=["address", "first_seen", "activation_date"])
+    frame = first_seen.copy()
+    frame["first_seen"] = pd.to_datetime(frame["first_seen"], utc=True)
+    frame["address"] = frame["address"].astype(str)
+    frame = frame[frame["first_seen"] >= METRICS_DATA_START]
+    frame["activation_date"] = frame["first_seen"].dt.floor("D")
+    return frame[["address", "first_seen", "activation_date"]]
+
+
+def ensure_activation_day_funded_snapshots(
+    first_seen: pd.DataFrame,
+    *,
+    lookback_days: int = 3,
+    batch_size: int = 200,
+    concurrency: int = 8,
+    delay_seconds: float = 0.5,
+    funded_threshold_stx: float = 10.0,
+    db_path: Path | None = None,
+) -> int:
+    """Ensure funded snapshots exist for wallets activated in the recent window."""
+
+    if first_seen.empty or lookback_days <= 0:
+        return 0
+
+    activation = _activation_frame(first_seen)
+    if activation.empty:
+        return 0
+
+    today = pd.Timestamp(_utc_now()).tz_convert("UTC").floor("D")
+    cutoff = today - pd.Timedelta(days=max(lookback_days - 1, 0))
+    scoped = activation[activation["activation_date"] >= cutoff]
+    if scoped.empty:
+        return 0
+
+    inserted = 0
+    for activation_date, rows in scoped.groupby("activation_date"):
+        addresses = rows["address"].astype(str).tolist()
+        inserted += ensure_wallet_balances(
+            addresses,
+            as_of_date=activation_date.date(),
+            funded_threshold_stx=funded_threshold_stx,
+            batch_size=batch_size,
+            max_workers=concurrency,
+            delay_seconds=delay_seconds,
+            db_path=db_path,
+        )
+    return inserted
+
+
+def collect_activation_day_funding(
+    first_seen: pd.DataFrame,
+    *,
+    db_path: Path | None = None,
+    fallback_db_path: Path | None = None,
+    persist: bool = True,
+) -> pd.DataFrame:
+    """Return funded-on-D0 snapshots for all known wallets.
+
+    The helper loads cached funded snapshots when available and only fetches
+    balances for activation dates (address, D0) that do not yet have a persisted
+    entry. Optional fallback_db_path allows reading from a secondary DuckDB
+    (e.g., the canonical DB) when the primary path is a read-only snapshot.
+    """
+
+    activation = _activation_frame(first_seen)
+    if activation.empty:
+        empty = pd.DataFrame(columns=FUNDED_D0_COLUMNS)
+        if persist:
+            write_parquet(FUNDED_D0_CACHE_PATH, empty)
+        return empty
+
+    cached = _load_funded_d0_cache()
+    merged = activation.merge(
+        cached,
+        on=["address", "activation_date"],
+        how="left",
+        suffixes=("", "_cached"),
+    )
+    needs_refresh = ~merged["has_snapshot"].fillna(False)
+    pending = merged.loc[needs_refresh, ["address", "activation_date"]].copy()
+    pending["address"] = pending["address"].astype(str)
+    pending["activation_date"] = pd.to_datetime(pending["activation_date"], utc=True)
+
+    def _fetch_from_db(requests: pd.DataFrame, path: Path | None) -> pd.DataFrame:
+        if path is None or requests.empty:
+            return pd.DataFrame(
+                columns=["address", "as_of_date", "balance_ustx", "funded", "ingested_at"]
+            )
+        records: list[pd.DataFrame] = []
+        with _connect(read_only=True, db_path=path) as conn:
+            for activation_date, group in requests.groupby("activation_date"):
+                addr_batch = group["address"].tolist()
+                try:
+                    df = conn.execute(
+                        """
+                        SELECT address, as_of_date, balance_ustx, funded, ingested_at
+                        FROM wallet_balances
+                        WHERE as_of_date = ?
+                          AND address IN (SELECT * FROM UNNEST(?))
+                        """,
+                        [activation_date.date(), addr_batch],
+                    ).fetchdf()
+                except duckdb.CatalogException:
+                    continue
+                if df.empty:
+                    continue
+                df["address"] = df["address"].astype(str)
+                df["as_of_date"] = pd.to_datetime(df["as_of_date"], utc=True).dt.floor("D")
+                df["ingested_at"] = pd.to_datetime(df["ingested_at"], utc=True)
+                records.append(df)
+        if not records:
+            return pd.DataFrame(
+                columns=["address", "as_of_date", "balance_ustx", "funded", "ingested_at"]
+            )
+        return pd.concat(records, ignore_index=True)
+
+    pending_remaining = pending.copy()
+    lookup_paths: list[Path | None] = [db_path, fallback_db_path]
+    fetched_frames: list[pd.DataFrame] = []
+    for path in lookup_paths:
+        if pending_remaining.empty:
+            break
+        fetched = _fetch_from_db(pending_remaining, path)
+        if fetched.empty:
+            continue
+        fetched_frames.append(fetched)
+        found_keys = set(zip(fetched["address"], fetched["as_of_date"]))
+        mask = pending_remaining.apply(
+            lambda row: (row["address"], row["activation_date"].floor("D")) not in found_keys,
+            axis=1,
+        )
+        pending_remaining = pending_remaining[mask]
+
+    new_rows: list[pd.DataFrame] = []
+    if fetched_frames:
+        fetched_all = pd.concat(fetched_frames, ignore_index=True)
+        fetched_all = fetched_all.rename(columns={"as_of_date": "snapshot_version"})
+        fetched_all["funded_d0"] = fetched_all["funded"].astype(bool)
+        fetched_all["has_snapshot"] = True
+        fetched_all["updated_at"] = pd.Timestamp(_utc_now()).tz_convert("UTC")
+        fetched_all["activation_date"] = fetched_all["snapshot_version"]
+        new_rows.append(
+            fetched_all[
+                [
+                    "address",
+                    "activation_date",
+                    "snapshot_version",
+                    "funded_d0",
+                    "balance_ustx",
+                    "has_snapshot",
+                    "ingested_at",
+                    "updated_at",
+                ]
+            ]
+        )
+
+    if not pending_remaining.empty:
+        placeholders = pending_remaining.copy()
+        placeholders = placeholders.rename(columns={"activation_date": "snapshot_version"})
+        placeholders["funded_d0"] = False
+        placeholders["balance_ustx"] = pd.NA
+        placeholders["has_snapshot"] = False
+        placeholders["ingested_at"] = pd.NaT
+        placeholders["updated_at"] = pd.Timestamp(_utc_now()).tz_convert("UTC")
+        placeholders["activation_date"] = placeholders["snapshot_version"]
+        new_rows.append(
+            placeholders[
+                [
+                    "address",
+                    "activation_date",
+                    "snapshot_version",
+                    "funded_d0",
+                    "balance_ustx",
+                    "has_snapshot",
+                    "ingested_at",
+                    "updated_at",
+                ]
+            ]
+        )
+
+    base = cached if not cached.empty else pd.DataFrame(columns=FUNDED_D0_COLUMNS)
+    if new_rows:
+        updates = pd.concat(new_rows, ignore_index=True)
+        updates = updates[FUNDED_D0_COLUMNS]
+        if not updates.empty:
+            base = pd.concat([base, updates], ignore_index=True)
+        base = base.sort_values("updated_at").drop_duplicates(
+            subset=["address", "activation_date"], keep="last"
+        )
+
+    result = activation.merge(
+        base,
+        on=["address", "activation_date"],
+        how="left",
+    )
+    result["has_snapshot"] = result["has_snapshot"].fillna(False)
+    result["funded_d0"] = result["funded_d0"].fillna(False)
+    result["balance_ustx"] = result["balance_ustx"].where(result["has_snapshot"], pd.NA)
+    result["snapshot_version"] = result["snapshot_version"].where(
+        result["has_snapshot"], pd.NaT
+    )
+    result["ingested_at"] = result["ingested_at"].where(result["has_snapshot"], pd.NaT)
+    result["updated_at"] = result["updated_at"].where(
+        result["updated_at"].notna(),
+        pd.Timestamp(_utc_now()).tz_convert("UTC"),
+    )
+
+    if persist:
+        write_parquet(FUNDED_D0_CACHE_PATH, result[FUNDED_D0_COLUMNS])
+    return result[FUNDED_D0_COLUMNS]
+
+
+def compute_value_flags(
+    activity: pd.DataFrame,
+    first_seen: pd.DataFrame,
+    *,
+    window_days: int = 30,
+    min_fee_stx: float = 1.0,
+) -> pd.DataFrame:
+    """Return value_30d flags derived from cached fee totals."""
+
+    columns = ["address", "activation_date", "value_30d"]
+    if activity.empty or first_seen.empty:
+        return pd.DataFrame(columns=columns)
+
+    activation = _activation_frame(first_seen)
+    if activation.empty:
+        return pd.DataFrame(columns=columns)
+
+    merged = activity.merge(
+        activation[["address", "activation_date"]],
+        on="address",
+        how="inner",
+    )
+    if merged.empty:
+        result = activation[["address", "activation_date"]].copy()
+        result["value_30d"] = False
+        return result
+
+    merged["days_since_activation"] = (
+        merged["activity_date"] - merged["activation_date"]
+    ).dt.days
+    merged = merged[
+        (merged["days_since_activation"] >= 0)
+        & (merged["days_since_activation"] <= window_days)
+    ].copy()
+    merged["fee_ustx"] = merged["fee_ustx"].fillna(0)
+
+    if merged.empty:
+        fee_totals = {}
+    else:
+        merged["fee_stx"] = merged["fee_ustx"].astype(float) / MICROSTX_PER_STX
+        fee_totals = merged.groupby("address")["fee_stx"].sum().to_dict()
+
+    result = activation[["address", "activation_date"]].copy()
+    result["value_30d"] = (
+        result["address"].map(fee_totals).fillna(0.0) >= min_fee_stx
+    )
+    return result
+
+
+def _persist_retention_segmented(
+    panel: pd.DataFrame, *, db_path: Path | None = None
+) -> None:
+    write_parquet(SEGMENTED_RETENTION_PATH, panel)
+    with _connect(db_path=db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute("DELETE FROM retention_segmented")
+        if panel.empty:
+            return
+        store_df = panel.copy()
+        store_df["updated_at"] = (
+            pd.to_datetime(store_df["updated_at"])
+            .dt.tz_convert("UTC")
+            .dt.tz_localize(None)
+        )
+        if "anchor_window_days" not in store_df.columns:
+            store_df["anchor_window_days"] = pd.NA
+        conn.register("incoming_retention_segmented", store_df)
+        conn.execute(
+            "INSERT OR REPLACE INTO retention_segmented BY NAME "
+            "SELECT * FROM incoming_retention_segmented"
+        )
+        conn.unregister("incoming_retention_segmented")
+
+
+def compute_segmented_retention_panel(
+    activity: pd.DataFrame,
+    first_seen: pd.DataFrame,
+    windows: Sequence[int],
+    *,
+    funded_activation: pd.DataFrame,
+    value_flags: pd.DataFrame,
+    today: pd.Timestamp | None = None,
+    persist: bool = True,
+    db_path: Path | None = None,
+) -> pd.DataFrame:
+    """Aggregate retention for All / Value / Non-value segments."""
+
+    columns = [
+        "window_days",
+        "segment",
+        "retained_users",
+        "eligible_users",
+        "retention_pct",
+        "anchor_window_days",
+        "updated_at",
+    ]
+    if (
+        activity.empty
+        or first_seen.empty
+        or funded_activation.empty
+        or not windows
+    ):
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    activation = _activation_frame(first_seen)
+    scoped = activation.merge(
+        funded_activation[
+            ["address", "activation_date", "funded_d0", "has_snapshot"]
+        ],
+        on=["address", "activation_date"],
+        how="left",
+    )
+    scoped["funded_d0"] = scoped["funded_d0"].fillna(False)
+    scoped["has_snapshot"] = scoped["has_snapshot"].fillna(False)
+    qualified = scoped[(scoped["funded_d0"]) & (scoped["has_snapshot"])]
+    if qualified.empty:
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    qualified = qualified.merge(
+        value_flags[["address", "activation_date", "value_30d"]],
+        on=["address", "activation_date"],
+        how="left",
+    )
+    qualified["value_30d"] = qualified["value_30d"].fillna(False)
+
+    membership_frames: list[pd.DataFrame] = [
+        qualified[["address", "first_seen", "activation_date"]].assign(segment="All")
+    ]
+    value_subset = qualified[qualified["value_30d"]]
+    if not value_subset.empty:
+        membership_frames.append(
+            value_subset[["address", "first_seen", "activation_date"]].assign(segment="Value")
+        )
+    non_value_subset = qualified[~qualified["value_30d"]]
+    if not non_value_subset.empty:
+        membership_frames.append(
+            non_value_subset[["address", "first_seen", "activation_date"]].assign(
+                segment="Non-value"
+            )
+        )
+    membership = pd.concat(membership_frames, ignore_index=True)
+    if membership.empty:
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    membership["activation_date"] = membership["activation_date"].dt.floor("D")
+    membership["first_seen"] = pd.to_datetime(membership["first_seen"], utc=True)
+    membership["address"] = membership["address"].astype(str)
+    membership = membership.drop_duplicates(subset=["address", "segment"])
+
+    segment_activity = activity.merge(
+        membership[["address", "segment", "activation_date", "first_seen"]],
+        on="address",
+        how="inner",
+    )
+    if segment_activity.empty:
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    segment_activity["days_since_activation"] = (
+        segment_activity["activity_date"] - segment_activity["activation_date"]
+    ).dt.days
+    segment_activity = segment_activity[segment_activity["days_since_activation"] >= 0]
+
+    windows = sorted(set(int(w) for w in windows if int(w) > 0))
+    if not windows:
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    if today is None:
+        today = pd.Timestamp(_utc_now()).tz_convert("UTC").floor("D")
+    else:
+        today = (
+            today.tz_convert("UTC").floor("D")
+            if today.tzinfo
+            else pd.Timestamp(today).tz_localize("UTC").floor("D")
+        )
+
+    cohort_sizes = (
+        membership.groupby(["segment", "activation_date"])["address"]
+        .nunique()
+        .rename("cohort_size")
+    )
+    if cohort_sizes.empty:
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    anchor_window: int | None = None
+    maturity_anchor: pd.Timestamp | None = None
+    eligible_anchor: pd.Series | None = None
+    for candidate in sorted(windows, reverse=True):
+        maturity_cutoff = today - pd.Timedelta(days=candidate)
+        eligible = cohort_sizes[
+            cohort_sizes.index.get_level_values("activation_date") <= maturity_cutoff
+        ]
+        if eligible.empty:
+            continue
+        anchor_window = candidate
+        maturity_anchor = maturity_cutoff
+        eligible_anchor = eligible
+        break
+    if anchor_window is None or eligible_anchor is None or maturity_anchor is None:
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    usable_windows = [w for w in windows if w <= anchor_window]
+    if not usable_windows:
+        panel = pd.DataFrame(columns=columns)
+        if persist:
+            _persist_retention_segmented(panel, db_path=db_path)
+        return panel
+
+    eligible_totals = eligible_anchor.reset_index().groupby("segment")["cohort_size"].sum()
+    segments = sorted(eligible_totals.index.tolist())
+
+    results: list[dict[str, object]] = []
+    for window in usable_windows:
+        engaged_mask = (segment_activity["days_since_activation"] > 0) & (
+            segment_activity["days_since_activation"] <= window
+        )
+        engaged = (
+            segment_activity[engaged_mask]
+            .drop_duplicates(subset=["segment", "activation_date", "address"])
+            .groupby(["segment", "activation_date"])["address"]
+            .nunique()
+            .rename("retained_users")
+        )
+        if not engaged.empty:
+            engaged = engaged[
+                engaged.index.get_level_values("activation_date") <= maturity_anchor
+            ]
+        retained_totals = (
+            engaged.reset_index().groupby("segment")["retained_users"].sum()
+            if not engaged.empty
+            else pd.Series(dtype=float)
+        )
+        for segment in segments:
+            eligible_total = int(eligible_totals.get(segment, 0))
+            if eligible_total == 0:
+                continue
+            retained_total = int(retained_totals.get(segment, 0))
+            pct = retained_total / eligible_total * 100 if eligible_total else 0.0
+            results.append(
+                {
+                    "window_days": int(window),
+                    "segment": segment,
+                    "retained_users": retained_total,
+                    "eligible_users": eligible_total,
+                    "retention_pct": pct,
+                    "anchor_window_days": int(anchor_window),
+                    "updated_at": pd.Timestamp(_utc_now()).tz_convert("UTC"),
+                }
+            )
+
+    panel = pd.DataFrame(results, columns=columns) if results else pd.DataFrame(columns=columns)
+    if not panel.empty:
+        panel = panel[columns]
+    if persist:
+        _persist_retention_segmented(panel, db_path=db_path)
+    return panel
 
 
 def compute_new_wallets(
@@ -738,7 +1283,25 @@ def compute_retention(
             ]
         )
 
-    merged = activity.merge(first_seen, on="address", how="left")
+    sanitized_first_seen = first_seen.copy()
+    sanitized_first_seen["first_seen"] = pd.to_datetime(
+        sanitized_first_seen["first_seen"], utc=True
+    )
+    sanitized_first_seen = sanitized_first_seen[
+        sanitized_first_seen["first_seen"] >= METRICS_DATA_START
+    ]
+    if sanitized_first_seen.empty:
+        return pd.DataFrame(
+            columns=[
+                "activation_date",
+                "window_days",
+                "cohort_size",
+                "retained_wallets",
+                "retention_rate",
+            ]
+        )
+
+    merged = activity.merge(sanitized_first_seen, on="address", how="left")
     merged = merged.dropna(subset=["first_seen"])
     if merged.empty:
         return pd.DataFrame(
@@ -948,3 +1511,23 @@ def compute_fee_per_wallet(
         )
 
     return pd.DataFrame(results).sort_values(["window_days", "activation_date"])
+def load_retention_segmented() -> pd.DataFrame:
+    cached = read_parquet(SEGMENTED_RETENTION_PATH)
+    if cached is None:
+        return pd.DataFrame(
+            columns=[
+                "window_days",
+                "segment",
+                "retained_users",
+                "eligible_users",
+                "retention_pct",
+                "anchor_window_days",
+                "updated_at",
+            ]
+        )
+    cached["updated_at"] = pd.to_datetime(cached["updated_at"], utc=True, errors="coerce")
+    cached["window_days"] = pd.to_numeric(cached["window_days"], errors="coerce").astype("Int64")
+    cached["segment"] = cached["segment"].astype(str)
+    if "anchor_window_days" not in cached.columns:
+        cached["anchor_window_days"] = pd.NA
+    return cached

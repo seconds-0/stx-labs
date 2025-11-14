@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import re
 import secrets
@@ -36,6 +37,22 @@ from src import wallet_value
 
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_ROI_WINDOWS: tuple[int, ...] = (15, 30, 60, 90, 180)
+RETENTION_CURVE_WINDOWS: tuple[int, ...] = roi.RETENTION_CURVE_WINDOWS
+RETENTION_SEGMENT_COLORS: dict[str, str] = {
+    "All": "#60a5fa",
+    "Value": "#22c55e",
+    "Non-value": "#f97316",
+}
+RETENTION_SEGMENT_LABELS: dict[str, str] = {
+    "All": "All funded (D0)",
+    "Value": "Value (≥1 STX fees by D30)",
+    "Non-value": "Non-value (<1 STX by D30)",
+}
+DATA_COVERAGE_START = wallet_metrics.METRICS_DATA_START
+DATA_COVERAGE_LABEL = DATA_COVERAGE_START.strftime("%Y-%m-%d")
+DATA_COVERAGE_NOTE = (
+    f"Data coverage: wallets activated on/after {DATA_COVERAGE_LABEL} (post-Nakamoto fork)."
+)
 
 
 NAV_LINKS: list[tuple[str, str, str]] = [
@@ -302,8 +319,29 @@ def _write_html(
             "    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }",
             "    .kpi-card { background: #161b2e; padding: 1rem; border-radius: 8px; border: 1px solid #2f354a; }",
             "    .kpi-label { text-transform: uppercase; font-size: 0.75rem; color: #7f8bb3; letter-spacing: 0.05em; }",
+            "    .kpi-label-row { display: flex; align-items: flex-start; gap: 0.5rem; }",
+            "    .kpi-label-text { flex: 1; }",
+            "    .kpi-badge { font-size: 0.65rem; text-transform: none; color: #9fb0d9; background: rgba(112,225,255,0.12); border: 1px solid #2f354a; border-radius: 999px; padding: 0.1rem 0.45rem; }",
             "    .kpi-value { font-size: 1.5rem; margin-top: 0.25rem; color: #f5f6fa; }",
             "    .kpi-subtext { font-size: 0.85rem; color: #7f8bb3; margin-top: 0.25rem; }",
+            "    .tooltip-icon { position: relative; border: 1px solid #70e1ff; color: #70e1ff; background: rgba(112,225,255,0.12); border-radius: 999px; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; cursor: help; padding: 0; }",
+            "    .tooltip-icon::after { content: attr(data-tooltip); position: absolute; top: 120%; right: 0; width: 240px; background: #0f1420; border: 1px solid #2f354a; border-radius: 6px; padding: 0.6rem; color: #dfe6ff; font-size: 0.75rem; line-height: 1.4; opacity: 0; pointer-events: none; transition: opacity 0.15s ease-in-out; z-index: 20; }",
+            "    .tooltip-icon:hover::after, .tooltip-icon:focus-visible::after { opacity: 1; }",
+            "    .tooltip-icon:focus-visible { outline: 2px solid #70e1ff; outline-offset: 2px; }",
+            "    .tooltip-icon::-moz-focus-inner { border: 0; }",
+            "    .retention-toggle { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }",
+            "    .retention-toggle label { cursor: pointer; font-size: 0.9rem; color: #dfe6ff; display: flex; align-items: center; gap: 0.35rem; }",
+            "    .retention-toggle input { accent-color: #70e1ff; }",
+            "    .retention-view { margin-top: 1rem; }",
+            "    .retention-curve { background: #151b2c; border: 1px solid #2f354a; border-radius: 10px; padding: 1.25rem; }",
+            "    .retention-curve-header { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }",
+            "    .curve-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: 1.25rem; align-items: flex-start; }",
+            "    .curve-chart { min-width: 0; }",
+            "    .curve-table-wrapper { width: 100%; }",
+            "    .curve-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; background: #101628; }",
+            "    .curve-table th, .curve-table td { border: 1px solid #2f354a; padding: 0.4rem 0.6rem; text-align: left; color: #dfe6ff; }",
+            "    .curve-table th { background: #1b2338; font-weight: 600; }",
+            "    @media (max-width: 960px) { .curve-body { grid-template-columns: 1fr; } }",
             "  </style>",
             "</head>",
             "<body>",
@@ -400,6 +438,12 @@ def _format_stx_with_usd(
     return f"{base} STX {usd_text}"
 
 
+def _format_pct(value: float | None, *, decimals: int = 1) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.{decimals}f}%"
+
+
 def _load_spot_price() -> tuple[datetime | None, float | None]:
     try:
         ts, price = prices.load_spot_price("STX-USD")
@@ -409,24 +453,45 @@ def _load_spot_price() -> tuple[datetime | None, float | None]:
         return None, None
 
 
+def _tooltip_icon(text: str | None, *, icon: str = "i") -> str:
+    if not text:
+        return ""
+    safe = html.escape(text, quote=True)
+    return (
+        f"<button type='button' class='tooltip-icon' aria-label='{safe}' "
+        f"data-tooltip='{safe}'>{icon}</button>"
+    )
+
+
 def render_kpi_cards(cards: Sequence[dict[str, str]]) -> str:
     if not cards:
         return "<p>No KPI data.</p>"
     rows = ["<div class='section'>", "<h2>Key KPIs</h2>", "<div class='kpi-grid'>"]
     for card in cards:
-        label = card.get("label", "")
-        tooltip = card.get("tooltip")
-        if tooltip:
-            label_html = f"<span title=\"{tooltip}\">{label}</span>"
-        else:
-            label_html = label
+        label = html.escape(card.get("label", ""))
+        badge = card.get("badge")
+        badge_html = (
+            f"<span class='kpi-badge'>{html.escape(str(badge))}</span>" if badge else ""
+        )
+        tooltip_html = _tooltip_icon(card.get("tooltip"))
+        label_row = "".join(
+            [
+                "<div class='kpi-label-row'>",
+                f"  <span class='kpi-label kpi-label-text'>{label}</span>",
+                f"  {badge_html}" if badge_html else "",
+                f"  {tooltip_html}" if tooltip_html else "",
+                "</div>",
+            ]
+        )
+        value = html.escape(card.get("value", "—"))
+        subtext = html.escape(card.get("subtext", ""))
         rows.append(
             "\n".join(
                 [
                     "<div class='kpi-card'>",
-                    f"  <div class='kpi-label'>{label_html}</div>",
-                    f"  <div class='kpi-value'>{card.get('value', '—')}</div>",
-                    f"  <div class='kpi-subtext'>{card.get('subtext', '')}</div>",
+                    f"  {label_row}",
+                    f"  <div class='kpi-value'>{value}</div>",
+                    f"  <div class='kpi-subtext'>{subtext}</div>",
                     "</div>",
                 ]
             )
@@ -541,7 +606,12 @@ def _build_bucketed_heatmap(
 
 
 def render_retention_heatmap(
-    retention: pd.DataFrame, *, section_id: str | None = None
+    retention: pd.DataFrame,
+    *,
+    section_id: str | None = None,
+    wrap_section: bool = True,
+    heading: str = "Retention",
+    note: str | None = None,
 ) -> str:
     if retention.empty:
         return "<p>No retention data available.</p>"
@@ -582,14 +652,23 @@ def render_retention_heatmap(
       }})();
     </script>
     """
-    sections = [
-        "<div class='section'>",
-        "<h2>Retention</h2>",
-        "<p class='note'>Each cell shows the share of a cohort that was active inside the final tracking band "
+    default_note = (
+        "Each cell shows the share of a cohort that was active inside the final tracking band "
         "(15 days for the 15d horizon, 30 days for all others). "
-        f"{RETENTION_BUCKET_NOTE}</p>",
-        toggle_controls,
-    ]
+        f"{RETENTION_BUCKET_NOTE}"
+    )
+    sections: list[str] = []
+    if wrap_section:
+        sections.append("<div class='section'>")
+        if heading:
+            sections.append(f"<h2>{heading}</h2>")
+    else:
+        if heading:
+            sections.append(f"<h3>{heading}</h3>")
+    note_text = default_note if note is None else note
+    if note_text:
+        sections.append(f"<p class='note'>{note_text}</p>")
+    sections.append(toggle_controls)
     if daily_fig is not None:
         sections.append(
             f"<div id='{daily_div_id}'>{pio.to_html(daily_fig, include_plotlyjs='cdn', full_html=False)}</div>"
@@ -599,8 +678,318 @@ def render_retention_heatmap(
             f"<div id='{weekly_div_id}' style='display:none;'>{pio.to_html(weekly_fig, include_plotlyjs=False, full_html=False)}</div>"
         )
     sections.append(toggle_script)
-    sections.append("</div>")
+    if wrap_section:
+        sections.append("</div>")
     return "\n".join(sections)
+
+
+def _available_retention_windows(panel: pd.DataFrame) -> list[int]:
+    if panel.empty or "window_days" not in panel:
+        return []
+    windows = sorted(
+        {
+            int(w)
+            for w in panel["window_days"].dropna().unique().tolist()
+            if pd.notna(w)
+        }
+    )
+    return windows
+
+
+def _retention_anchor_window(panel: pd.DataFrame) -> int | None:
+    if panel.empty:
+        return None
+    if "anchor_window_days" in panel.columns:
+        anchors = panel["anchor_window_days"].dropna()
+        if not anchors.empty:
+            return int(anchors.iloc[0])
+    windows = _available_retention_windows(panel)
+    return windows[-1] if windows else None
+
+
+def _prepare_retention_series(
+    panel: pd.DataFrame,
+    segments: Sequence[str],
+    windows: Sequence[int],
+) -> dict[str, list[roi.RetentionPoint]]:
+    series_map = roi.retention_curve_points(
+        panel,
+        windows=windows,
+        segments=segments,
+    )
+    prepared: dict[str, list[roi.RetentionPoint]] = {}
+    for segment, points in series_map.items():
+        ordered = sorted(points, key=lambda p: p.window_days)
+        if not ordered:
+            continue
+        if ordered[0].window_days != 0:
+            origin = roi.RetentionPoint(
+                window_days=0,
+                retention_pct=100.0,
+                eligible_users=ordered[0].eligible_users,
+            )
+            ordered = [origin, *ordered]
+        prepared[segment] = ordered
+    return prepared
+
+
+def _lookup_point(points: list[roi.RetentionPoint] | None, window: int) -> roi.RetentionPoint | None:
+    if not points:
+        return None
+    return next((pt for pt in points if pt.window_days == window), None)
+
+
+def _retention_table_html(
+    series_map: dict[str, list[roi.RetentionPoint]],
+    windows: Sequence[int],
+    segments: Sequence[str],
+    *,
+    include_eligible: bool,
+) -> str:
+    headers = ["Window"]
+    for segment in segments:
+        label = RETENTION_SEGMENT_LABELS.get(segment, segment)
+        headers.append(label)
+    if include_eligible:
+        headers.append("Eligible wallets (All)")
+    rows = ["<table class='curve-table'>", "<thead><tr>"]
+    rows.extend([f"<th>{html.escape(header)}</th>" for header in headers])
+    rows.append("</tr></thead><tbody>")
+    for window in sorted({int(w) for w in windows if int(w) > 0}):
+        cells = [f"<td>{window}d</td>"]
+        for segment in segments:
+            point = _lookup_point(series_map.get(segment), window)
+            cells.append(f"<td>{_format_pct(point.retention_pct) if point else '—'}</td>")
+        if include_eligible:
+            eligible = _lookup_point(series_map.get("All"), window)
+            if eligible:
+                cells.append(f"<td>{eligible.eligible_users:,}</td>")
+            else:
+                cells.append("<td>—</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    rows.append("</tbody></table>")
+    return "\n".join(rows)
+
+
+def render_retention_blended_curve(
+    panel: pd.DataFrame,
+    *,
+    windows: Sequence[int],
+) -> str:
+    available_windows = [w for w in _available_retention_windows(panel) if w in {int(x) for x in windows}]
+    if not available_windows:
+        return "<p class='note'>No funded cohorts have matured enough to render the blended retention curve yet.</p>"
+    series_map = _prepare_retention_series(panel, ("All",), available_windows)
+    points = series_map.get("All")
+    if not points:
+        return "<p class='note'>Not enough funded cohorts to render the blended retention curve.</p>"
+
+    fig = go.Figure()
+    fig.add_scatter(
+        x=[pt.window_days for pt in points],
+        y=[pt.retention_pct for pt in points],
+        mode="lines+markers",
+        name="All funded D0",
+        line=dict(color=RETENTION_SEGMENT_COLORS["All"], width=3),
+        marker=dict(color=RETENTION_SEGMENT_COLORS["All"], size=8),
+        hovertemplate="<b>Day %{x}</b><br>Retention %{y:.1f}%<extra></extra>",
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        height=420,
+        xaxis_title="Days since activation (D0)",
+        yaxis_title="Cumulative retention (%)",
+        yaxis=dict(range=[0, 100], ticksuffix="%"),
+        xaxis=dict(tickmode="array", tickvals=[0, *sorted({int(w) for w in windows if int(w) > 0})]),
+        margin=dict(t=30, r=10, l=60, b=60),
+    )
+    table_html = _retention_table_html(
+        series_map,
+        available_windows,
+        ("All",),
+        include_eligible=True,
+    )
+    tooltip = (
+        "Wallets funded on their activation day (D0). A point at day N counts wallets that have ever been active "
+        "between D0 and D0+N; once retained they stay retained. Only cohorts that have fully reached day N contribute."
+    )
+    anchor_window = _retention_anchor_window(panel)
+    anchor_note = (
+        f"Longest available window currently plotted: {anchor_window}d "
+        "(limited by matured funded cohorts)."
+        if anchor_window
+        else ""
+    )
+    return "\n".join(
+        [
+            "<div class='retention-curve'>",
+            "<div class='retention-curve-header'>",
+            "  <h3>Blended funded retention (default view)</h3>",
+            f"  {_tooltip_icon(tooltip)}",
+            "</div>",
+            "<div class='curve-body'>",
+            f"  <div class='curve-chart'>{pio.to_html(fig, include_plotlyjs='cdn', full_html=False)}</div>",
+            f"  <div class='curve-table-wrapper'>{table_html}</div>",
+            "</div>",
+            "<p class='note'>Starts at 100% by definition; for example, a drop to 9% at day 15 would mean 91% of "
+            "funded wallets never returned between day 1 and day 15. "
+            f"{DATA_COVERAGE_NOTE} {anchor_note}</p>",
+            "</div>",
+        ]
+    )
+
+
+def render_retention_segmented_lines(
+    panel: pd.DataFrame,
+    *,
+    windows: Sequence[int],
+) -> str:
+    segments = ("All", "Value", "Non-value")
+    available_windows = [w for w in _available_retention_windows(panel) if w in {int(x) for x in windows}]
+    if not available_windows:
+        return "<p class='note'>Segmented retention will appear once funded cohorts mature past the requested windows.</p>"
+    series_map = _prepare_retention_series(panel, segments, available_windows)
+    if not series_map:
+        return "<p class='note'>Segmented retention will appear once funded cohorts mature past the requested windows.</p>"
+
+    fig = go.Figure()
+    for segment in segments:
+        points = series_map.get(segment)
+        if not points:
+            continue
+        fig.add_scatter(
+            x=[pt.window_days for pt in points],
+            y=[pt.retention_pct for pt in points],
+            mode="lines+markers",
+            name=RETENTION_SEGMENT_LABELS.get(segment, segment),
+            line=dict(color=RETENTION_SEGMENT_COLORS.get(segment, "#dfe6ff"), width=3),
+            marker=dict(color=RETENTION_SEGMENT_COLORS.get(segment, "#dfe6ff"), size=7),
+            hovertemplate="<b>%{text}</b><br>Day %{x}: %{y:.1f}%<extra></extra>",
+            text=[RETENTION_SEGMENT_LABELS.get(segment, segment)] * len(points),
+        )
+    fig.update_layout(
+        template="plotly_dark",
+        height=420,
+        xaxis_title="Days since activation (D0)",
+        yaxis_title="Cumulative retention (%)",
+        yaxis=dict(range=[0, 100], ticksuffix="%"),
+        margin=dict(t=30, r=10, l=60, b=60),
+    )
+    table_html = _retention_table_html(
+        series_map,
+        available_windows,
+        tuple(seg for seg in segments if seg in series_map),
+        include_eligible=True,
+    )
+    tooltip = (
+        "All lines require a D0-funded wallet. Value wallets generated ≥1 STX of fees within 30 days; "
+        "Non-value wallets are funded but below that threshold. Points only draw when enough cohorts have matured."
+    )
+    anchor_window = _retention_anchor_window(panel)
+    anchor_note = (
+        f"Longest available window currently plotted: {anchor_window}d "
+        "(limited by matured funded cohorts)."
+        if anchor_window
+        else ""
+    )
+    return "\n".join(
+        [
+            "<div class='retention-curve'>",
+            "<div class='retention-curve-header'>",
+            "  <h3>Segmented retention (All / Value / Non-value)</h3>",
+            f"  {_tooltip_icon(tooltip)}",
+            "</div>",
+            "<div class='curve-body'>",
+            f"  <div class='curve-chart'>{pio.to_html(fig, include_plotlyjs=False, full_html=False)}</div>",
+            f"  <div class='curve-table-wrapper'>{table_html}</div>",
+            "</div>",
+            "<p class='note'>Value / Non-value split determined by ≥1 STX of fees within the first 30 days. "
+            f"{DATA_COVERAGE_NOTE} {anchor_note}</p>",
+            "</div>",
+        ]
+    )
+
+
+def render_roi_retention_section(
+    retention: pd.DataFrame,
+    segmented_panel: pd.DataFrame,
+    *,
+    section_id: str = "roi-retention",
+) -> str:
+    if retention.empty and segmented_panel.empty:
+        return "<p>No retention data available.</p>"
+
+    blended_id = f"{section_id}-blended"
+    segmented_id = f"{section_id}-segmented"
+    heatmap_id = f"{section_id}-heatmap"
+    toggle_name = f"{section_id}-view"
+
+    blended_html = render_retention_blended_curve(
+        segmented_panel,
+        windows=RETENTION_CURVE_WINDOWS,
+    )
+    segmented_html = render_retention_segmented_lines(
+        segmented_panel,
+        windows=RETENTION_CURVE_WINDOWS,
+    )
+    heatmap_html = render_retention_heatmap(
+        retention,
+        section_id=f"{section_id}-heat",
+        wrap_section=False,
+        heading="",
+        note="Existing active-band heatmap (trailing 15d/30d activity).",
+    )
+    anchor_window = _retention_anchor_window(segmented_panel)
+    anchor_blurb = (
+        f"Longest funded-window currently available: {anchor_window}d. "
+        "180d will appear automatically once enough cohorts mature."
+        if anchor_window and anchor_window < max(RETENTION_CURVE_WINDOWS)
+        else ""
+    )
+
+    toggle_controls = f"""
+    <div class='retention-toggle'>
+      <label><input type="radio" name="{toggle_name}" value="blended" checked /> Blended curve</label>
+      <label><input type="radio" name="{toggle_name}" value="segments" /> Segmented lines</label>
+      <label><input type="radio" name="{toggle_name}" value="heatmap" /> Active-band heatmap</label>
+    </div>
+    """
+    toggle_script = f"""
+    <script>
+      (function() {{
+        const radios = document.querySelectorAll('input[name="{toggle_name}"]');
+        const views = {{
+          blended: document.getElementById('{blended_id}'),
+          segments: document.getElementById('{segmented_id}'),
+          heatmap: document.getElementById('{heatmap_id}')
+        }};
+        function show(view) {{
+          Object.entries(views).forEach(([key, el]) => {{
+            if (!el) return;
+            el.style.display = key === view ? 'block' : 'none';
+          }});
+        }}
+        radios.forEach((radio) => radio.addEventListener('change', (event) => show(event.target.value)));
+        show('blended');
+      }})();
+    </script>
+    """
+
+    section_parts = [
+        "<div class='section'>",
+        "<h2>Retention</h2>",
+        "<p class='note'>Toggle between the new funded-only cumulative retention curve, the segment breakdown, and the "
+        "existing active-band heatmap. Cumulative views only include wallets funded on activation day (D0) and "
+        "cohorts that have matured through the requested window. "
+        f"{DATA_COVERAGE_NOTE} {anchor_blurb}</p>",
+        toggle_controls,
+        f"<div id='{blended_id}' class='retention-view'>{blended_html}</div>",
+        f"<div id='{segmented_id}' class='retention-view' style='display:none;'>{segmented_html}</div>",
+        f"<div id='{heatmap_id}' class='retention-view' style='display:none;'>{heatmap_html}</div>",
+        toggle_script,
+        "</div>",
+    ]
+    return "\n".join(section_parts)
 
 
 def render_waltv_bars(summary: pd.DataFrame, *, spot_price: float | None, as_of: datetime | None) -> str:
@@ -619,6 +1008,15 @@ def render_waltv_bars(summary: pd.DataFrame, *, spot_price: float | None, as_of:
         marker_color="#70e1ff",
         hovertemplate="<b>Window:</b> %{x}<br><b>All Avg:</b> %{y:.3f} STX<extra></extra>",
     )
+    has_funded = "avg_funded" in summary.columns and summary["avg_funded"].notna().any()
+    if has_funded:
+        fig.add_bar(
+            x=labels,
+            y=summary["avg_funded"].fillna(0.0),
+            name="Funded Wallets (D0)",
+            marker_color="#22c55e",
+            hovertemplate="<b>Window:</b> %{x}<br><b>Funded Avg:</b> %{y:.3f} STX<extra></extra>",
+        )
     fig.add_bar(
         x=labels,
         y=summary["avg_survivor"],
@@ -628,7 +1026,7 @@ def render_waltv_bars(summary: pd.DataFrame, *, spot_price: float | None, as_of:
     )
     fig.update_layout(
         barmode="group",
-        title="Average NV (All vs Survivors)",
+        title="Average NV (All vs Funded vs Survivors)",
         xaxis_title="Window",
         yaxis_title="Avg NV (STX)",
         template="plotly_dark",
@@ -637,23 +1035,31 @@ def render_waltv_bars(summary: pd.DataFrame, *, spot_price: float | None, as_of:
     table_df = summary.copy()
     if spot_price is not None:
         table_df["Avg NV (All wallets, USD)"] = table_df["avg_all"] * spot_price
+        if has_funded:
+            table_df["Avg NV (Funded wallets, USD)"] = (
+                table_df["avg_funded"].fillna(0.0) * spot_price
+            )
         table_df["Avg NV (Survivors, USD)"] = table_df["avg_survivor"] * spot_price
     table_df = table_df.rename(
         columns={
             "window_days": "Window (d)",
             "avg_all": "Avg NV (All wallets)",
-            "avg_survivor": "Avg NV (Survivors)",
             "cohort_size": "Cohort Wallets Considered",
+            "avg_funded": "Avg NV (Funded wallets)",
+            "funded_wallets": "Funded Wallets Considered",
+            "avg_survivor": "Avg NV (Survivors)",
         }
     )
     table = table_df.to_html(index=False, classes="summary-table", float_format=lambda x: f"{x:.4f}")
     return "\n".join(
         [
             "<div class='section'>",
-            "<h2>Average NV (All vs Survivors)</h2>",
+            "<h2>Average NV (All vs Survivors vs Funded)</h2>",
             "<p class='note'>All-wallet averages keep zeros for dormant wallets so funnel drag is visible; "
-            "survivor averages isolate wallets that were active during each window’s trailing band. "
-            "NV currently equals WALTV because incentives/derived value are not applied yet.</p>",
+            "survivor averages isolate wallets active inside each window’s trailing band; funded averages filter the same "
+            "windows down to wallets that met the ≥10 STX D0 balance gate. NV currently equals WALTV because incentives/"
+            "derived value are not applied yet. "
+            f"{DATA_COVERAGE_NOTE}</p>",
             pio.to_html(fig, include_plotlyjs="cdn", full_html=False),
             table,
             "</div>",
@@ -698,7 +1104,8 @@ def render_payback_table(
         [
             "<div class='section'>",
             f"<h2>{title}</h2>",
-            "<p class='note'>Payback Multiple = Avg NV (window) ÷ CAC; values above 1.0 mean the cohort has already covered acquisition cost at that horizon.</p>"
+            "<p class='note'>Payback Multiple = Avg NV (window) ÷ CAC; values above 1.0 mean the cohort has already covered acquisition cost at that horizon. "
+            f"{DATA_COVERAGE_NOTE}</p>"
             + (
                 f"<p class='note'>Spot STX/USD ≈ ${spot_price:,.4f} as of {as_of:%Y-%m-%d %H:%M %Z}</p>"
                 if spot_price is not None and as_of is not None
@@ -2283,7 +2690,8 @@ def build_value_dashboard(
                     "<div class='section'>",
                     "<h2>Activation vs Trailing</h2>",
                     "<p class='note'>WALTV-N tracks the first N days post-activation, while Last-N measures the most recent calendar window for the entire base. "
-                    "Comparing the two highlights whether fresh cohorts or the mature install base are driving value.</p>",
+                    "Comparing the two highlights whether fresh cohorts or the mature install base are driving value. "
+                    f"{DATA_COVERAGE_NOTE}</p>",
                     comp_df.to_html(index=False, float_format=lambda x: f"{x:.4f}"),
                     "</div>",
                 ]
@@ -2468,6 +2876,22 @@ def build_roi_dashboard(
     active_breakdown = roi.active_base_breakdown(inputs.activity, inputs.first_seen)
 
     window_rollups: list[dict[str, float]] = []
+    funded_windows = pd.DataFrame(columns=inputs.windows_agg.columns)
+    if (
+        hasattr(inputs, "funded_activation")
+        and inputs.funded_activation is not None
+        and not inputs.funded_activation.empty
+    ):
+        funded_addresses = inputs.funded_activation[
+            inputs.funded_activation["funded_d0"]
+            & inputs.funded_activation["has_snapshot"]
+        ]["address"].astype(str)
+        if not funded_addresses.empty:
+            funded_windows = inputs.windows_agg[
+                inputs.windows_agg["address"].astype(str).isin(set(funded_addresses))
+            ].copy()
+    else:
+        funded_windows = pd.DataFrame(columns=inputs.windows_agg.columns)
     if not waltv_all.empty:
         for window in sorted(waltv_all["window_days"].unique()):
             subset = waltv_all[waltv_all["window_days"] == window]
@@ -2490,15 +2914,33 @@ def build_roi_dashboard(
                 )
             else:
                 avg_survivor = 0.0
+            funded_subset = pd.DataFrame(columns=inputs.windows_agg.columns)
+            funded_wallets = 0
+            avg_funded = 0.0
+            if not funded_windows.empty:
+                funded_subset = funded_windows[funded_windows["window_days"] == window]
+                if not funded_subset.empty:
+                    funded_wallets = len(funded_subset)
+                    total_funded_fee = funded_subset["fee_stx_sum"].sum()
+                    if funded_wallets:
+                        avg_funded = total_funded_fee / funded_wallets
             window_rollups.append(
                 {
                     "window_days": window,
                     "avg_all": avg_all,
                     "avg_survivor": avg_survivor,
                     "cohort_size": total_cohort,
+                    "avg_funded": avg_funded if funded_wallets else None,
+                    "funded_wallets": funded_wallets,
                 }
             )
     window_summary = pd.DataFrame(window_rollups)
+
+    retention_snapshot = roi.retention_snapshot_summary(
+        inputs.retention_segmented,
+        windows=RETENTION_CURVE_WINDOWS,
+        value_window=30,
+    )
 
     cards: list[dict[str, str]] = []
     cards.append(
@@ -2508,7 +2950,12 @@ def build_roi_dashboard(
                 expected_180, spot_price=spot_price, as_of=spot_price_ts
             ),
             "subtext": "Weighted Avg (last 180d activations, fully matured)",
-            "tooltip": "Cohort-size-weighted NV (fees paid) across cohorts activated in the last 180 days that have completely reached 180 days of activity. Rename back to WALTV once derived/incentive data lands.",
+            "tooltip": (
+                "Pipeline: wallet_metrics → wallet_value.compute_wallet_windows. We take every cohort activated in the last "
+                "180 calendar days that has already reached day 180, sum their fee_stx_totals from DuckDB, and divide by the "
+                "cohort size. This is pure on-chain fee spend (NV) until derived value lands. "
+                f"{DATA_COVERAGE_NOTE}"
+            ),
         }
     )
     cards.append(
@@ -2518,7 +2965,12 @@ def build_roi_dashboard(
                 expected_180, spot_price=spot_price, as_of=spot_price_ts
             ),
             "subtext": "Spend ≤ this STX to hit payback 1.0",
-            "tooltip": "Maximum acquisition cost per wallet that still yields a 1.0x payback at 180 days; numerically equal to Expected NV-180 until WALTV diverges from NV.",
+            "tooltip": (
+                "Same data source as Expected NV-180 (wallet_metrics + wallet_value aggregates). This number is the guardrail "
+                "CPA that still yields a 1.0× payback at 180d, so we simply reuse the weighted NV-180 output as the max "
+                "allowable spend per funded activation. "
+                f"{DATA_COVERAGE_NOTE}"
+            ),
         }
     )
     young_wallets = active_breakdown.get("young_wallets", 0)
@@ -2536,8 +2988,10 @@ def build_roi_dashboard(
             "value": f"{young_wallets} ({young_pct:.1f}%)",
             "subtext": "Share of active base in last 30d",
             "tooltip": (
-                "Count of wallets that (a) transacted in the last 30 days and (b) were activated ≤180 days ago. "
-                "Percentage shows their share of the entire last-30-day active base."
+                "Source: roi.active_base_breakdown. We pull the last 30 calendar days of wallet_metrics activity, bucket each "
+                "address by activation age from first_seen, and count + sum fees for wallets whose activation date is within "
+                "180 days. Percentage = this bucket ÷ total active wallets in the last 30 days. "
+                f"{DATA_COVERAGE_NOTE}"
             ),
         }
     )
@@ -2547,15 +3001,58 @@ def build_roi_dashboard(
             "value": f"{legacy_wallets} ({legacy_pct:.1f}%)",
             "subtext": "Legacy share of last-30d active base",
             "tooltip": (
-                "Wallets with last-30-day activity whose activation was more than 180 days ago. "
-                "Percentage indicates how much of today’s active base is made up of long-tenured wallets."
+                "Same dataset as the ≤180d card, but we keep addresses whose activation date is older than 180 days. "
+                "Shows how much of the current 30-day active base relies on legacy cohorts sourced from wallet_metrics. "
+                f"{DATA_COVERAGE_NOTE}"
+            ),
+        }
+    )
+
+    if retention_snapshot:
+        ordered_windows = [w for w in (15, 30, 60, 90, 180) if w in retention_snapshot["metrics"]]
+        headline_window = ordered_windows[0] if ordered_windows else None
+        headline_value = (
+            f"{headline_window}d {_format_pct(retention_snapshot['metrics'][headline_window])}"
+            if headline_window
+            else _format_pct(None)
+        )
+        sub_parts: list[str] = []
+        for window in ordered_windows[1:]:
+            sub_parts.append(f"{window}d {_format_pct(retention_snapshot['metrics'][window])}")
+        value_pair = retention_snapshot.get("value_pair") or {}
+        pair_items: list[str] = []
+        if value_pair.get("value_pct") is not None:
+            pair_items.append(f"Value {_format_pct(value_pair['value_pct'])}")
+        if value_pair.get("non_value_pct") is not None:
+            pair_items.append(f"Non-value {_format_pct(value_pair['non_value_pct'])}")
+        if pair_items:
+            sub_parts.append(f"{value_pair.get('window_days', 30)}d: {' vs '.join(pair_items)}")
+        cards.append(
+            {
+                "label": "Funded Retention Snapshot",
+                "value": headline_value,
+                "subtext": " | ".join(sub_parts),
+                "badge": f"Eligible {retention_snapshot['eligible_users']:,} wallets",
+            "tooltip": (
+                "Source: wallet_metrics.collect_activation_day_funding + compute_segmented_retention_panel. We only include "
+                "wallets whose D0 balance snapshot met the funded threshold (≥10 STX), then measure classic cumulative "
+                "retention (ever active by day N). Percentages are cohort-size weighted and stored in "
+                "retention_segmented.parquet for reuse. "
+                f"{DATA_COVERAGE_NOTE}"
             ),
         }
     )
 
     sections: list[str] = []
     sections.append(render_kpi_cards(cards))
-    sections.append(render_retention_heatmap(retention, section_id="roi-retention"))
+    sections.append(f"<p class='note'>{DATA_COVERAGE_NOTE}</p>")
+    sections.append(
+        render_roi_retention_section(
+            retention=retention,
+            segmented_panel=inputs.retention_segmented,
+            section_id="roi-retention",
+        )
+    )
     sections.append(
         render_waltv_bars(window_summary, spot_price=spot_price, as_of=spot_price_ts)
     )
@@ -2588,7 +3085,8 @@ def build_roi_dashboard(
             "<div class='section'>"
             "<h2>Payback vs CAC</h2>"
             "<p class='note'>Channel payback requires --cac-file (channel,cac_stx) plus --channel-map-file "
-            "(address,activation_date,channel). Until those inputs are wired, lean on the breakeven CPA guardrail below.</p>"
+            "(address,activation_date,channel). Until those inputs are wired, lean on the breakeven CPA guardrail below. "
+            f"{DATA_COVERAGE_NOTE}</p>"
             f"<div class='kpi-card' style='max-width:260px;'>"
             "<div class='kpi-label'>Breakeven CPA @180d (NV)</div>"
             f"<div class='kpi-value'>{_format_number(expected_180)} STX</div>"
