@@ -965,11 +965,41 @@ def render_retention_section(
         ),
         note="Share of funded wallets still active inside the trailing band.",
     )
+    def _prepend_zero_row(panel: pd.DataFrame) -> pd.DataFrame:
+        if panel.empty:
+            return panel
+        segments = panel["segment"].unique()
+        additions: list[dict[str, object]] = []
+        updated_at = datetime.now(UTC)
+        for segment in segments:
+            subset = panel[panel["segment"] == segment]
+            if subset.empty:
+                continue
+            eligible = int(subset.iloc[0]["eligible_users"])
+            anchor = subset.iloc[0].get("anchor_window_days")
+            additions.append(
+                {
+                    "window_days": 0,
+                    "segment": segment,
+                    "retained_users": 0,
+                    "eligible_users": eligible,
+                    "retention_pct": 0.0,
+                    "anchor_window_days": anchor,
+                    "updated_at": pd.Timestamp(updated_at),
+                }
+            )
+        if not additions:
+            return panel
+        augmented = pd.concat([pd.DataFrame(additions), panel], ignore_index=True)
+        return augmented.sort_values(["segment", "window_days"])
+
     cumulative_html = ""
     if cumulative_panel is not None and not cumulative_panel.empty:
+        cumulative_display = _prepend_zero_row(cumulative_panel.copy())
+        cumulative_windows = (0,) + RETENTION_CURVE_WINDOWS
         cumulative_html = render_retention_segmented_lines(
-            cumulative_panel,
-            windows=RETENTION_CURVE_WINDOWS,
+            cumulative_display,
+            windows=cumulative_windows,
             title="Cumulative retention (legacy)",
             tooltip=(
                 "Legacy cumulative view: once a funded wallet is active between D0 and day N it remains counted for all "

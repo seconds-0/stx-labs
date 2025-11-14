@@ -1240,6 +1240,27 @@ def compute_segmented_retention_panel(
     panel = pd.DataFrame(results, columns=columns) if results else pd.DataFrame(columns=columns)
     if not panel.empty:
         panel = panel[columns]
+        if mode == "cumulative":
+            zero_rows: list[dict[str, object]] = []
+            updated_at = pd.Timestamp(_utc_now()).tz_convert("UTC")
+            for segment in segments:
+                eligible_total = int(eligible_totals.get(segment, 0))
+                if eligible_total <= 0:
+                    continue
+                zero_rows.append(
+                    {
+                        "window_days": 0,
+                        "segment": segment,
+                        "retained_users": 0,
+                        "eligible_users": eligible_total,
+                        "retention_pct": 0.0,
+                        "anchor_window_days": int(anchor_window),
+                        "updated_at": updated_at,
+                    }
+                )
+            if zero_rows:
+                panel = pd.concat([pd.DataFrame(zero_rows), panel], ignore_index=True)
+                panel = panel.sort_values(["segment", "window_days"])
     if persist:
         _persist_retention_segmented(
             panel,
