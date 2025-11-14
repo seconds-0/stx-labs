@@ -177,7 +177,7 @@ def refresh_dashboard_cache(
         funded_activation=funded_activation,
         value_flags=value_flags,
         db_path=wallet_db_path,
-        mode="active_band",
+        mode="survival",
         persist_path=wallet_metrics.SEGMENTED_RETENTION_SURVIVAL_PATH,
         persist_db=False,
     )
@@ -259,7 +259,7 @@ def load_roi_inputs_from_cache() -> roi.RoiInputs | None:
     retention_active = _df_or_empty(WALLET_RETENTION_ACTIVE_PATH)
     windows_agg = _df_or_empty(ROI_WINDOWS_PATH)
     classification = _df_or_empty(ROI_CLASSIFICATION_PATH)
-    retention_segmented = wallet_metrics.load_retention_segmented_active_band()
+    retention_segmented = wallet_metrics.load_retention_segmented_survival()
     retention_segmented_cumulative = wallet_metrics.load_retention_segmented()
     funded_activation = wallet_metrics.collect_activation_day_funding(
         first_seen,

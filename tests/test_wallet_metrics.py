@@ -587,10 +587,10 @@ def test_segmented_retention_panel_active_band_survival():
         value_flags=value_flags,
         today=today,
         persist=False,
-        mode="active_band",
+        mode="survival",
     )
     assert not survival_panel.empty
     all_rows = survival_panel[survival_panel["segment"] == "All"].set_index("window_days")
-    assert pytest.approx(all_rows.loc[30, "retention_pct"]) == 100.0
+    assert pytest.approx(all_rows.loc[30, "retention_pct"]) == 50.0
     assert pytest.approx(all_rows.loc[60, "retention_pct"]) == 50.0
-    assert pytest.approx(all_rows.loc[90, "retention_pct"]) == 50.0
+    assert pytest.approx(all_rows.loc[90, "retention_pct"]) == 0.0

@@ -1302,7 +1302,7 @@ def build_wallet_dashboard(
             funded_activation=funded_activation,
             value_flags=value_flags,
             db_path=wallet_db_path,
-            mode="active_band",
+            mode="survival",
             persist_path=wallet_metrics.SEGMENTED_RETENTION_SURVIVAL_PATH,
             persist_db=False,
         )

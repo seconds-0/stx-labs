@@ -11,10 +11,11 @@
 - **Modules to know:**  
   - `src/wallet_metrics.py` – Hiro ingestion + DuckDB cache  
   - `src/wallet_value.py` – NV/WALTV windows, classification, CPA helpers  
-  - `src/pox_yields.py` – PoX cycle summaries for dashboard linkage  
-  - `scripts/build_dashboards.py` – wallet/macro/value dashboards (HTML)  
-  - `scripts/backfill_wallet_history.py` & helpers – long-running ingestion  
-  - `scripts/README.md` documents every automation script and status.
+- `src/pox_yields.py` – PoX cycle summaries for dashboard linkage  
+- `scripts/build_dashboards.py` – wallet/macro/value dashboards (HTML)  
+- `scripts/backfill_wallet_history.py` & helpers – long-running ingestion  
+- `scripts/README.md` documents every automation script and status.
+- **Retention canon:** ROI and wallet dashboards must default to the **survival-style retention curve** (wallets funded on D0 that remain active within the trailing band: 15 d band for the 15 d window, 30 d band for ≥30 d windows). Keep the legacy cumulative (“ever active”) view available only as a reference toggle; do not regress the main KPI back to the cumulative definition.
 
 ## 2. Standard Commands & Tooling
 

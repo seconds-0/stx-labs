@@ -1004,8 +1004,8 @@ def compute_segmented_retention_panel(
         "anchor_window_days",
         "updated_at",
     ]
-    if mode not in {"cumulative", "active_band"}:
-        raise ValueError("mode must be 'cumulative' or 'active_band'")
+    if mode not in {"cumulative", "survival"}:
+        raise ValueError("mode must be 'cumulative' or 'survival'")
     target_path = persist_path or SEGMENTED_RETENTION_PATH
 
     if (
@@ -1106,6 +1106,13 @@ def compute_segmented_retention_panel(
     ).dt.days
     segment_activity = segment_activity[segment_activity["days_since_activation"] >= 0]
 
+    last_activity = (
+        segment_activity.groupby(["segment", "activation_date", "address"])["days_since_activation"]
+        .max()
+        .rename("last_active_days")
+        .reset_index()
+    )
+
     windows = sorted(set(int(w) for w in windows if int(w) > 0))
     if not windows:
         panel = pd.DataFrame(columns=columns)
@@ -1183,27 +1190,26 @@ def compute_segmented_retention_panel(
     eligible_totals = eligible_anchor.reset_index().groupby("segment")["cohort_size"].sum()
     segments = sorted(eligible_totals.index.tolist())
 
-    def _band_size(window_days: int) -> int:
-        if window_days <= 15:
-            return 15
-        return 30
-
     results: list[dict[str, object]] = []
     for window in usable_windows:
         if mode == "cumulative":
-            lower_bound = 0
+            engaged = (
+                segment_activity[
+                    (segment_activity["days_since_activation"] > 0)
+                    & (segment_activity["days_since_activation"] <= window)
+                ]
+                .drop_duplicates(subset=["segment", "activation_date", "address"])
+                .groupby(["segment", "activation_date"])["address"]
+                .nunique()
+                .rename("retained_users")
+            )
         else:
-            lower_bound = max(0, window - _band_size(window))
-        engaged_mask = (segment_activity["days_since_activation"] > lower_bound) & (
-            segment_activity["days_since_activation"] <= window
-        )
-        engaged = (
-            segment_activity[engaged_mask]
-            .drop_duplicates(subset=["segment", "activation_date", "address"])
-            .groupby(["segment", "activation_date"])["address"]
-            .nunique()
-            .rename("retained_users")
-        )
+            survival_subset = last_activity[last_activity["last_active_days"] >= window]
+            engaged = (
+                survival_subset.groupby(["segment", "activation_date"])["address"]
+                .nunique()
+                .rename("retained_users")
+            )
         if not engaged.empty:
             engaged = engaged[
                 engaged.index.get_level_values("activation_date") <= maturity_anchor
@@ -1601,7 +1607,7 @@ def load_retention_segmented() -> pd.DataFrame:
     return cached
 
 
-def load_retention_segmented_active_band() -> pd.DataFrame:
+def load_retention_segmented_survival() -> pd.DataFrame:
     cached = read_parquet(SEGMENTED_RETENTION_SURVIVAL_PATH)
     if cached is None:
         return pd.DataFrame(
