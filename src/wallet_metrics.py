@@ -26,6 +26,7 @@ WALLET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 FIRST_SEEN_CACHE_PATH = WALLET_CACHE_DIR / "first_seen_wallets.parquet"
 FUNDED_D0_CACHE_PATH = WALLET_CACHE_DIR / "wallet_funded_d0.parquet"
 SEGMENTED_RETENTION_PATH = WALLET_CACHE_DIR / "retention_segmented.parquet"
+SEGMENTED_RETENTION_SURVIVAL_PATH = WALLET_CACHE_DIR / "retention_segmented_survival.parquet"
 METRICS_DATA_START = pd.Timestamp("2024-12-23T00:00:00Z")
 MICROSTX_PER_STX = 1_000_000
 TRANSACTION_PAGE_LIMIT = 50
@@ -948,9 +949,15 @@ def compute_value_flags(
 
 
 def _persist_retention_segmented(
-    panel: pd.DataFrame, *, db_path: Path | None = None
+    panel: pd.DataFrame,
+    *,
+    output_path: Path,
+    db_path: Path | None = None,
+    persist_db: bool = True,
 ) -> None:
-    write_parquet(SEGMENTED_RETENTION_PATH, panel)
+    write_parquet(output_path, panel)
+    if not persist_db:
+        return
     with _connect(db_path=db_path) as conn:
         _ensure_schema(conn)
         conn.execute("DELETE FROM retention_segmented")
@@ -982,6 +989,9 @@ def compute_segmented_retention_panel(
     today: pd.Timestamp | None = None,
     persist: bool = True,
     db_path: Path | None = None,
+    mode: str = "cumulative",
+    persist_path: Path | None = None,
+    persist_db: bool = True,
 ) -> pd.DataFrame:
     """Aggregate retention for All / Value / Non-value segments."""
 
@@ -994,6 +1004,10 @@ def compute_segmented_retention_panel(
         "anchor_window_days",
         "updated_at",
     ]
+    if mode not in {"cumulative", "active_band"}:
+        raise ValueError("mode must be 'cumulative' or 'active_band'")
+    target_path = persist_path or SEGMENTED_RETENTION_PATH
+
     if (
         activity.empty
         or first_seen.empty
@@ -1002,7 +1016,12 @@ def compute_segmented_retention_panel(
     ):
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     activation = _activation_frame(first_seen)
@@ -1019,7 +1038,12 @@ def compute_segmented_retention_panel(
     if qualified.empty:
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     qualified = qualified.merge(
@@ -1048,7 +1072,12 @@ def compute_segmented_retention_panel(
     if membership.empty:
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     membership["activation_date"] = membership["activation_date"].dt.floor("D")
@@ -1064,7 +1093,12 @@ def compute_segmented_retention_panel(
     if segment_activity.empty:
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     segment_activity["days_since_activation"] = (
@@ -1076,7 +1110,12 @@ def compute_segmented_retention_panel(
     if not windows:
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     if today is None:
@@ -1096,7 +1135,12 @@ def compute_segmented_retention_panel(
     if cohort_sizes.empty:
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     anchor_window: int | None = None
@@ -1116,22 +1160,41 @@ def compute_segmented_retention_panel(
     if anchor_window is None or eligible_anchor is None or maturity_anchor is None:
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     usable_windows = [w for w in windows if w <= anchor_window]
     if not usable_windows:
         panel = pd.DataFrame(columns=columns)
         if persist:
-            _persist_retention_segmented(panel, db_path=db_path)
+            _persist_retention_segmented(
+                panel,
+                output_path=target_path,
+                db_path=db_path,
+                persist_db=persist_db,
+            )
         return panel
 
     eligible_totals = eligible_anchor.reset_index().groupby("segment")["cohort_size"].sum()
     segments = sorted(eligible_totals.index.tolist())
 
+    def _band_size(window_days: int) -> int:
+        if window_days <= 15:
+            return 15
+        return 30
+
     results: list[dict[str, object]] = []
     for window in usable_windows:
-        engaged_mask = (segment_activity["days_since_activation"] > 0) & (
+        if mode == "cumulative":
+            lower_bound = 0
+        else:
+            lower_bound = max(0, window - _band_size(window))
+        engaged_mask = (segment_activity["days_since_activation"] > lower_bound) & (
             segment_activity["days_since_activation"] <= window
         )
         engaged = (
@@ -1172,7 +1235,12 @@ def compute_segmented_retention_panel(
     if not panel.empty:
         panel = panel[columns]
     if persist:
-        _persist_retention_segmented(panel, db_path=db_path)
+        _persist_retention_segmented(
+            panel,
+            output_path=target_path,
+            db_path=db_path,
+            persist_db=persist_db,
+        )
     return panel
 
 
@@ -1513,6 +1581,28 @@ def compute_fee_per_wallet(
     return pd.DataFrame(results).sort_values(["window_days", "activation_date"])
 def load_retention_segmented() -> pd.DataFrame:
     cached = read_parquet(SEGMENTED_RETENTION_PATH)
+    if cached is None:
+        return pd.DataFrame(
+            columns=[
+                "window_days",
+                "segment",
+                "retained_users",
+                "eligible_users",
+                "retention_pct",
+                "anchor_window_days",
+                "updated_at",
+            ]
+        )
+    cached["updated_at"] = pd.to_datetime(cached["updated_at"], utc=True, errors="coerce")
+    cached["window_days"] = pd.to_numeric(cached["window_days"], errors="coerce").astype("Int64")
+    cached["segment"] = cached["segment"].astype(str)
+    if "anchor_window_days" not in cached.columns:
+        cached["anchor_window_days"] = pd.NA
+    return cached
+
+
+def load_retention_segmented_active_band() -> pd.DataFrame:
+    cached = read_parquet(SEGMENTED_RETENTION_SURVIVAL_PATH)
     if cached is None:
         return pd.DataFrame(
             columns=[

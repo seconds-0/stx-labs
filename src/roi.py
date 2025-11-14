@@ -22,6 +22,7 @@ class RoiInputs:
     windows_agg: pd.DataFrame
     classification: pd.DataFrame
     retention_segmented: pd.DataFrame
+    retention_segmented_cumulative: pd.DataFrame
     funded_activation: pd.DataFrame
     data_start: pd.Timestamp
 
@@ -122,6 +123,14 @@ def build_inputs(
     segmented_windows = sorted(
         {int(w) for w in windows if int(w) > 0} | set(RETENTION_CURVE_WINDOWS)
     )
+    retention_segmented_cumulative = wallet_metrics.compute_segmented_retention_panel(
+        activity,
+        first_seen,
+        segmented_windows,
+        funded_activation=funded_activation,
+        value_flags=value_flags,
+        db_path=wallet_db_path,
+    )
     retention_segmented = wallet_metrics.compute_segmented_retention_panel(
         activity,
         first_seen,
@@ -129,6 +138,9 @@ def build_inputs(
         funded_activation=funded_activation,
         value_flags=value_flags,
         db_path=wallet_db_path,
+        mode="active_band",
+        persist_path=wallet_metrics.SEGMENTED_RETENTION_SURVIVAL_PATH,
+        persist_db=False,
     )
     return RoiInputs(
         activity=activity,
@@ -137,6 +149,7 @@ def build_inputs(
         windows_agg=windows_agg,
         classification=classification,
         retention_segmented=retention_segmented,
+        retention_segmented_cumulative=retention_segmented_cumulative,
         funded_activation=funded_activation,
         data_start=wallet_metrics.METRICS_DATA_START,
     )

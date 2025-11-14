@@ -520,3 +520,77 @@ def test_segmented_retention_panel_uses_fixed_denominator():
     all_rows = panel[panel["segment"] == "All"].sort_values("window_days")
     assert all_rows["eligible_users"].tolist() == [2, 2]
     assert all_rows.iloc[0]["retention_pct"] >= all_rows.iloc[1]["retention_pct"]
+
+
+def test_segmented_retention_panel_active_band_survival():
+    today = pd.Timestamp("2025-04-01T00:00Z")
+    windows = (30, 60, 90)
+    first_seen = pd.DataFrame(
+        {
+            "address": ["STAY", "DROP"],
+            "first_seen": [
+                pd.Timestamp("2025-01-01T00:00Z"),
+                pd.Timestamp("2025-01-01T00:00Z"),
+            ],
+        }
+    )
+    activity = pd.DataFrame(
+        {
+            "tx_id": ["s1", "s2", "s3", "d1"],
+            "address": ["STAY", "STAY", "STAY", "DROP"],
+            "block_time": [
+                pd.Timestamp("2025-01-10T00:00Z"),
+                pd.Timestamp("2025-02-27T00:00Z"),
+                pd.Timestamp("2025-03-21T00:00Z"),
+                pd.Timestamp("2025-01-12T00:00Z"),
+            ],
+            "activity_date": [
+                pd.Timestamp("2025-01-10T00:00Z"),
+                pd.Timestamp("2025-02-27T00:00Z"),
+                pd.Timestamp("2025-03-21T00:00Z"),
+                pd.Timestamp("2025-01-12T00:00Z"),
+            ],
+            "fee_ustx": [1_000_000, 1_000_000, 1_000_000, 1_000_000],
+            "tx_type": ["contract_call"] * 4,
+        }
+    )
+    funded_activation = pd.DataFrame(
+        {
+            "address": ["STAY", "DROP"],
+            "activation_date": [
+                pd.Timestamp("2025-01-01T00:00Z"),
+                pd.Timestamp("2025-01-01T00:00Z"),
+            ],
+            "funded_d0": [True, True],
+            "balance_ustx": [15_000_000, 15_000_000],
+            "snapshot_version": [
+                pd.Timestamp("2025-01-01T00:00Z"),
+                pd.Timestamp("2025-01-01T00:00Z"),
+            ],
+            "has_snapshot": [True, True],
+            "ingested_at": [
+                pd.Timestamp("2025-01-02T00:00:00Z"),
+                pd.Timestamp("2025-01-02T00:00:00Z"),
+            ],
+            "updated_at": [
+                pd.Timestamp("2025-01-02T00:00:00Z"),
+                pd.Timestamp("2025-01-02T00:00:00Z"),
+            ],
+        }
+    )
+    value_flags = wallet_metrics.compute_value_flags(activity, first_seen, window_days=30)
+    survival_panel = wallet_metrics.compute_segmented_retention_panel(
+        activity,
+        first_seen,
+        windows=windows,
+        funded_activation=funded_activation,
+        value_flags=value_flags,
+        today=today,
+        persist=False,
+        mode="active_band",
+    )
+    assert not survival_panel.empty
+    all_rows = survival_panel[survival_panel["segment"] == "All"].set_index("window_days")
+    assert pytest.approx(all_rows.loc[30, "retention_pct"]) == 100.0
+    assert pytest.approx(all_rows.loc[60, "retention_pct"]) == 50.0
+    assert pytest.approx(all_rows.loc[90, "retention_pct"]) == 50.0
