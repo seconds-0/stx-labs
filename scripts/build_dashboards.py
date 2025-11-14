@@ -49,6 +49,7 @@ RETENTION_SEGMENT_LABELS: dict[str, str] = {
     "Value": "Value (≥1 STX fees by D30)",
     "Non-value": "Non-value (<1 STX by D30)",
 }
+RETROSPECTIVE_ACTIVITY_WINDOWS: tuple[int, ...] = (1, 15, 30, 60, 90, 180)
 DATA_COVERAGE_START = wallet_metrics.METRICS_DATA_START
 DATA_COVERAGE_LABEL = DATA_COVERAGE_START.strftime("%Y-%m-%d")
 DATA_COVERAGE_NOTE = (
@@ -340,7 +341,8 @@ def _write_html(
             "    .curve-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 260px); gap: 0.85rem; align-items: flex-start; width: 100%; }",
             "    .curve-chart { min-width: 0; }",
             "    .curve-table-wrapper { width: 100%; max-width: 260px; overflow: hidden; }",
-            "    .retention-curve .note { margin-top: 0.9rem; }",
+            "    .retention-note { margin: 0.2rem 0 0.8rem; font-size: 0.85rem; color: #9fb0d9; line-height: 1.45; }",
+            "    .retention-curve .note { margin-top: 0.9rem; position: relative; z-index: 2; line-height: 1.5; }",
             "    .curve-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; background: #101628; }",
             "    .curve-table th, .curve-table td { border: 1px solid #2f354a; padding: 0.4rem 0.6rem; text-align: left; color: #dfe6ff; }",
             "    .curve-table th { background: #1b2338; font-weight: 600; }",
@@ -792,6 +794,41 @@ def render_retention_blended_curve(
     if not points:
         return "<p class='note'>Not enough funded cohorts to render the blended retention curve.</p>"
 
+    anchor_window = _retention_anchor_window(panel)
+    coverage_cutoff: pd.Timestamp | None = None
+    if anchor_window and "updated_at" in panel.columns:
+        updated_values = panel["updated_at"].dropna()
+        if not updated_values.empty:
+            latest_update = pd.to_datetime(updated_values.max()).tz_convert(UTC)
+            coverage_cutoff = latest_update.floor("D") - pd.Timedelta(days=anchor_window)
+
+    detail_parts: list[str] = []
+    eligible_total = points[0].eligible_users if points else None
+    if eligible_total:
+        detail_parts.append(
+            f"Eligible funded wallets feeding every point: {eligible_total:,}."
+        )
+    if anchor_window and coverage_cutoff is not None:
+        detail_parts.append(
+            "Cohorts shown: funded-on-D0 wallets activated on/after "
+            f"{DATA_COVERAGE_LABEL} and on/before {coverage_cutoff.date()} "
+            f"(must be ≥{anchor_window}d old to reach D{anchor_window})."
+        )
+    elif anchor_window:
+        detail_parts.append(
+            "Cohorts shown: funded-on-D0 wallets with enough history to reach "
+            f"Day {anchor_window}; shorter windows reuse the same cohort pool."
+        )
+    window_tags = ", ".join(f"D{w}" for w in sorted({int(w) for w in available_windows}))
+    if window_tags:
+        detail_parts.append(
+            f"Windows plotted: {window_tags}. 15d uses a trailing 15d survival band; "
+            "≥30d windows use a trailing 30d band, so wallets drop out when idle and re-enter once they transact again."
+        )
+    detail_html = (
+        f"<p class='note retention-note'>{' '.join(detail_parts)}</p>" if detail_parts else ""
+    )
+
     fig = go.Figure()
     fig.add_scatter(
         x=[pt.window_days for pt in points],
@@ -818,17 +855,21 @@ def render_retention_blended_curve(
         include_eligible=True,
     )
     tooltip = tooltip or (
-        "Wallets funded on their activation day (D0). A point at day N counts wallets that have ever been active "
-        "between D0 and D0+N; once retained they stay retained. Only cohorts that have fully reached day N contribute."
+        "Blends every funded-on-D0 cohort that has matured for the selected window. "
+        "Each point counts wallets with ≥1 transaction inside the trailing survival band ending on day N "
+        "(15d band for D15, 30d for ≥30d), so wallets can exit and re-enter as their activity changes."
     )
     footnote = footnote or (
-        "Starts at 100% by definition; for example, a drop to 9% at day 15 would mean 91% of funded wallets never "
-        "returned between day 1 and day 15."
+        "Percentages share a single eligible cohort so windows stay comparable. Wallets are only retained "
+        "while they keep transacting in the trailing survival band; they immediately rejoin once fresh activity appears."
     )
-    anchor_window = _retention_anchor_window(panel)
     anchor_note = (
         f"Longest available window currently plotted: {anchor_window}d "
-        "(limited by matured funded cohorts)."
+        + (
+            f"(activation dates ≤ {coverage_cutoff.date()})."
+            if coverage_cutoff is not None
+            else "(limited by matured funded cohorts)."
+        )
         if anchor_window
         else ""
     )
@@ -839,6 +880,7 @@ def render_retention_blended_curve(
             f"  <h3>{title}</h3>",
             f"  {_tooltip_icon(tooltip)}",
             "</div>",
+            detail_html,
             "<div class='curve-body'>",
             f"  <div class='curve-chart'>{pio.to_html(fig, include_plotlyjs='cdn', full_html=False)}</div>",
             f"  <div class='curve-table-wrapper'>{table_html}</div>",
@@ -1230,6 +1272,151 @@ def render_metric_glossary() -> str:
     return "\n".join(rows)
 
 
+def compute_retrospective_activity_summary(
+    activity: pd.DataFrame,
+    funded_activation: pd.DataFrame,
+    *,
+    as_of: pd.Timestamp,
+    windows: Sequence[int] = RETROSPECTIVE_ACTIVITY_WINDOWS,
+) -> tuple[pd.DataFrame, int]:
+    columns = ["window_days", "window_label", "active_wallets", "active_pct"]
+    if funded_activation.empty:
+        return pd.DataFrame(columns=columns), 0
+
+    eligible_pool = funded_activation[
+        (funded_activation["funded_d0"].fillna(False))
+        & (funded_activation["has_snapshot"].fillna(False))
+    ]
+    if eligible_pool.empty:
+        return pd.DataFrame(columns=columns), 0
+
+    eligible_addresses = (
+        eligible_pool["address"].astype(str).dropna().drop_duplicates().tolist()
+    )
+    eligible_total = len(eligible_addresses)
+    if eligible_total == 0:
+        return pd.DataFrame(columns=columns), 0
+
+    windows = sorted({int(w) for w in windows if int(w) > 0})
+    if not windows:
+        return pd.DataFrame(columns=columns), eligible_total
+
+    eligible_set = set(eligible_addresses)
+    scoped_activity = activity[activity["address"].isin(eligible_set)].copy()
+    if scoped_activity.empty:
+        last_activity = pd.DataFrame({"address": eligible_addresses, "last_activity_date": pd.NaT})
+    else:
+        last_activity = (
+            scoped_activity.groupby("address")["activity_date"]
+            .max()
+            .rename("last_activity_date")
+            .reset_index()
+        )
+        last_activity = (
+            pd.DataFrame({"address": eligible_addresses})
+            .merge(last_activity, on="address", how="left")
+        )
+
+    results: list[dict[str, object]] = []
+    for window in windows:
+        label = "Last 1d (today)" if window == 1 else f"Last {window}d"
+        cutoff = as_of - pd.Timedelta(days=window - 1)
+        if last_activity.empty:
+            active = 0
+        else:
+            mask = last_activity["last_activity_date"].notna() & (
+                last_activity["last_activity_date"] >= cutoff
+            )
+            active = int(mask.sum())
+        pct = active / eligible_total * 100 if eligible_total else 0.0
+        results.append(
+            {
+                "window_days": int(window),
+                "window_label": label,
+                "active_wallets": active,
+                "active_pct": pct,
+            }
+        )
+
+    summary = pd.DataFrame(results, columns=columns).sort_values("window_days")
+    return summary, eligible_total
+
+
+def render_retrospective_activity_section(
+    summary: pd.DataFrame,
+    *,
+    as_of: pd.Timestamp,
+    eligible_total: int,
+) -> str:
+    if summary.empty or eligible_total <= 0:
+        return ""
+
+    summary = summary.sort_values("window_days")
+    labels = summary["window_label"].tolist()
+    fig = go.Figure()
+    fig.add_bar(
+        x=labels,
+        y=summary["active_wallets"],
+        name="Active wallets",
+        marker_color="#60a5fa",
+        hovertemplate="<b>%{x}</b><br>Active wallets: %{y:,}<extra></extra>",
+    )
+    fig.add_scatter(
+        x=labels,
+        y=summary["active_pct"],
+        yaxis="y2",
+        name="% of funded",
+        mode="lines+markers",
+        line=dict(color="#f97316", width=3),
+        marker=dict(size=8),
+        hovertemplate="<b>%{x}</b><br>% of funded: %{y:.2f}%<extra></extra>",
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        title="Retrospective activity pulse",
+        xaxis_title="Trailing window ending today",
+        yaxis=dict(title="Active wallets"),
+        yaxis2=dict(
+            title="% of funded wallets",
+            overlaying="y",
+            side="right",
+            ticksuffix="%",
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2),
+        height=420,
+    )
+
+    display = summary.copy()
+    display["share_pct"] = summary["active_pct"].map(lambda v: f"{v:.2f}%")
+    display = display.rename(
+        columns={
+            "window_label": "Window",
+            "active_wallets": "Active wallets",
+        }
+    )[
+        ["window_days", "Window", "Active wallets", "share_pct"]
+    ]
+    display = display.rename(columns={"window_days": "Window (d)", "share_pct": "% of funded"})
+    table_html = display.to_html(index=False, classes="summary-table")
+
+    note = (
+        f"<p class='note'>Counts wallets funded on D0 (eligible pool: {eligible_total:,}) "
+        f"that recorded ≥1 canonical transaction during the trailing window ending {as_of:%Y-%m-%d}. "
+        "Unlike survival retention, wallets can drop out and immediately return based solely on recent activity.</p>"
+    )
+
+    return "\n".join(
+        [
+            "<div class='section'>",
+            "<h2>Retrospective Activity</h2>",
+            note,
+            pio.to_html(fig, include_plotlyjs="cdn", full_html=False),
+            table_html,
+            "</div>",
+        ]
+    )
+
+
 def build_wallet_dashboard(
     *,
     output_path: Path,
@@ -1337,6 +1524,19 @@ def build_wallet_dashboard(
             persist_path=wallet_metrics.SEGMENTED_RETENTION_SURVIVAL_PATH,
             persist_db=False,
         )
+
+    if funded_activation.empty and not first_seen.empty:
+        funded_activation = wallet_metrics.collect_activation_day_funding(
+            first_seen,
+            db_path=wallet_db_path,
+            persist=True,
+        )
+
+    retro_summary, retro_eligible = compute_retrospective_activity_summary(
+        activity,
+        funded_activation,
+        as_of=wallet_today,
+    )
 
     summary_rows: list[dict[str, object]] = []
     for window in windows:
@@ -1550,6 +1750,14 @@ def build_wallet_dashboard(
         fig_fee.update_layout(height=520)
         fee_html = pio.to_html(fig_fee, include_plotlyjs="cdn", full_html=False)
 
+    retrospective_html = ""
+    if retro_eligible > 0 and not retro_summary.empty:
+        retrospective_html = render_retrospective_activity_section(
+            retro_summary,
+            as_of=wallet_today,
+            eligible_total=retro_eligible,
+        )
+
     sections = [
         "<div class='section'>",
         "<h1>Stacks Wallet Growth Dashboard</h1>",
@@ -1567,6 +1775,8 @@ def build_wallet_dashboard(
         summary_table_html,
         "</div>",
     ]
+    if retrospective_html:
+        sections.append(retrospective_html)
     if trend_html:
         sections.extend(
             ["<div class='section'>", "<h2>Daily Activity</h2>", trend_html, "</div>"]
