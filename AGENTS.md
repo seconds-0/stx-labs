@@ -76,6 +76,7 @@
   (Use the same env var values configured in Vercel; `--archive=tgz` keeps the upload within limits.)
 - Expected output includes `Production: https://stx-labs-<hash>-seconds0-projects.vercel.app`; alias as needed in the Vercel dashboard.
 - After any middleware change, redeploy and ensure the password page loads; if the CLI complains about permissions, confirm the Git author email has access to the Vercel team.
+- Deploy only the static artifacts by pointing Vercel at `public/`: `npx vercel deploy public --prod --yes`. This keeps the upload small; do **not** run `vercel deploy` from repo root unless the repo has been pruned of caches.
 
 ## 5. Agent Checklist
 1. Run `bd ready` → pick issue → branch.
