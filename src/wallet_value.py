@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -450,6 +450,7 @@ def compute_value_pipeline(
     force_refresh: bool = False,
     wallet_db_path: Path | None = None,
     skip_history_sync: bool = False,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """End-to-end pipeline to compute wallet value analytics for dashboards.
 
@@ -458,34 +459,69 @@ def compute_value_pipeline(
       - windows: per-wallet window aggregates
       - classification: funded/active/value flags per wallet
     """
+    def pulse(fraction: float, detail: str) -> None:
+        if progress_callback is None:
+            return
+        bounded = min(max(fraction, 0.0), 0.99)
+        progress_callback(bounded, detail)
+
     # Ensure transaction history exists and load
     if not skip_history_sync:
+        pulse(0.05, "Ensuring transaction history")
         wallet_metrics.ensure_transaction_history(
             max_days=max_days, force_refresh=force_refresh
         )
+    pulse(0.15, "Loading wallet activity")
     activity = wallet_metrics.load_recent_wallet_activity(
         max_days=max_days, db_path=wallet_db_path
     )
     first_seen = wallet_metrics.update_first_seen_cache(activity)
+    pulse(0.3, "Updating activation cache")
     thresholds = ClassificationThresholds()
     if not first_seen.empty:
         activation = compute_activation(first_seen)
-        cutoff_ts = datetime.now(UTC) - timedelta(days=max_days)
+        recent_window_days = min(max_days, 30)
+        cutoff_ts = datetime.now(UTC) - timedelta(days=recent_window_days)
         recent_addresses = activation[
             activation["activation_time"] >= cutoff_ts
         ]["address"].astype(str)
+        pulse(0.45, "Ensuring funded wallet balances")
+        def balances_progress(
+            completed_batches: int,
+            total_batches: int,
+            processed_addresses: int,
+            total_addresses: int,
+        ) -> None:
+            if progress_callback is None:
+                return
+            total = max(total_batches, 1)
+            portion = min(max(completed_batches / total, 0.0), 1.0)
+            detail = (
+                f"Ensuring funded wallet balances ({processed_addresses}/{total_addresses})"
+                if total_addresses
+                else "Ensuring funded wallet balances"
+            )
+            pulse(0.4 + 0.15 * portion, detail)
+
         wallet_metrics.ensure_wallet_balances(
             recent_addresses.tolist(),
             as_of_date=datetime.now(UTC).date(),
             funded_threshold_stx=thresholds.funded_stx_min,
             db_path=wallet_db_path,
+            batch_size=25,
+            max_workers=5,
+            delay_seconds=0.5,
+            progress_callback=balances_progress if progress_callback else None,
         )
 
     # Load prices and compute aggregates
+    pulse(0.55, "Loading STX/BTC price panel")
     price_panel = load_price_panel_for_activity(activity, force_refresh=force_refresh)
+    pulse(0.7, "Computing WALTV windows")
     windows_agg = compute_wallet_windows(
         activity, first_seen, price_panel, windows=windows
     )
+    pulse(0.85, "Classifying funded/active/value wallets")
     cls = classify_wallets(
         first_seen=first_seen,
         activity=activity,

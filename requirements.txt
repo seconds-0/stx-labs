@@ -16,3 +16,4 @@ ruff
 python-dotenv
 papermill
 yfinance
+rich

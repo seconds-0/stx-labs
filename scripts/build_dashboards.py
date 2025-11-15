@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import re
 import secrets
@@ -12,7 +13,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from string import Template
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -29,6 +30,7 @@ from src import dashboard_cache
 from src import external_inputs
 from src import macro_analysis
 from src import macro_data
+from src import ops_events
 from src import pox_yields
 from src import prices
 from src import roi
@@ -39,6 +41,7 @@ from src import wallet_value
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_ROI_WINDOWS: tuple[int, ...] = (15, 30, 60, 90, 180)
 RETENTION_CURVE_WINDOWS: tuple[int, ...] = roi.RETENTION_CURVE_WINDOWS
+REQUIRED_FEE_WINDOWS: set[int] = set(RETENTION_CURVE_WINDOWS)
 RETENTION_SEGMENT_COLORS: dict[str, str] = {
     "All": "#60a5fa",
     "Value": "#22c55e",
@@ -346,6 +349,14 @@ def _write_html(
             "    .curve-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; background: #101628; }",
             "    .curve-table th, .curve-table td { border: 1px solid #2f354a; padding: 0.4rem 0.6rem; text-align: left; color: #dfe6ff; }",
             "    .curve-table th { background: #1b2338; font-weight: 600; }",
+            "    .retention-custom { margin-top: 1.25rem; padding: 1rem; border-radius: 10px; background: #101628; border: 1px solid #2f354a; }",
+            "    .retention-custom h4 { margin: 0 0 0.75rem; font-size: 1rem; color: #e2e8ff; }",
+            "    .retention-custom-controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; font-size: 0.9rem; color: #c7d2ff; }",
+            "    .retention-custom-controls label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.25rem; }",
+            "    .retention-custom-controls input { background: #0f1420; border: 1px solid #2f354a; border-radius: 6px; color: #f5f6fa; padding: 0.35rem 0.5rem; }",
+            "    .retention-custom-controls button { background: #2563eb; border: none; border-radius: 6px; padding: 0.45rem 0.9rem; color: #fff; cursor: pointer; font-weight: 600; }",
+            "    .retention-custom-controls button:disabled { opacity: 0.6; cursor: not-allowed; }",
+            "    .retention-custom-summary { font-size: 0.85rem; color: #9fb0d9; }",
             "    @media (max-width: 960px) { .curve-body { grid-template-columns: 1fr; } }",
             "  </style>",
             "</head>",
@@ -740,6 +751,65 @@ def _prepare_retention_series(
     return prepared
 
 
+def _aggregate_fee_by_window(
+    cohort_retention: pd.DataFrame | None,
+    cohort_fees: pd.DataFrame | None,
+    windows: Sequence[int],
+) -> dict[int, dict[str, float]]:
+    if (
+        cohort_retention is None
+        or cohort_fees is None
+        or cohort_retention.empty
+        or cohort_fees.empty
+    ):
+        return {}
+    if not {"activation_date", "window_days"}.issubset(cohort_fees.columns):
+        return {}
+    if not {"activation_date", "window_days", "cohort_size"}.issubset(
+        cohort_retention.columns
+    ):
+        return {}
+
+    retention_scope = cohort_retention[["activation_date", "window_days", "cohort_size"]].copy()
+    retention_scope["activation_date"] = pd.to_datetime(
+        retention_scope["activation_date"], utc=True, errors="coerce"
+    ).dt.floor("D")
+    fees_scope = cohort_fees.copy()
+    fees_scope["activation_date"] = pd.to_datetime(
+        fees_scope["activation_date"], utc=True, errors="coerce"
+    ).dt.floor("D")
+    if fees_scope["activation_date"].isna().all():
+        return {}
+    merged = retention_scope.merge(
+        fees_scope,
+        on=["activation_date", "window_days"],
+        how="inner",
+    )
+    if merged.empty:
+        return {}
+
+    results: dict[int, dict[str, float]] = {}
+    window_set = {int(w) for w in windows if int(w) > 0}
+    for window in sorted(window_set):
+        subset = merged[merged["window_days"] == window]
+        if subset.empty:
+            continue
+        weights = subset.get("wallets_observed")
+        if weights is None or weights.isna().all():
+            weights = subset["cohort_size"].astype(float)
+        else:
+            weights = subset["wallets_observed"].fillna(subset["cohort_size"])  # type: ignore[assignment]
+        total_weight = float(weights.sum())
+        if total_weight <= 0:
+            continue
+        avg_fee = float((subset["avg_fee_stx"].astype(float) * weights).sum() / total_weight)
+        results[window] = {
+            "avg_fee": avg_fee,
+            "observed": int(round(total_weight)),
+        }
+    return results
+
+
 def _lookup_point(points: list[roi.RetentionPoint] | None, window: int) -> roi.RetentionPoint | None:
     if not points:
         return None
@@ -782,6 +852,8 @@ def render_retention_blended_curve(
     panel: pd.DataFrame,
     *,
     windows: Sequence[int],
+    cohort_retention: pd.DataFrame | None = None,
+    cohort_fees: pd.DataFrame | None = None,
     title: str = "Blended funded retention (default view)",
     tooltip: str | None = None,
     footnote: str | None = None,
@@ -825,6 +897,15 @@ def render_retention_blended_curve(
             f"Windows plotted: {window_tags}. 15d uses a trailing 15d survival band; "
             "≥30d windows use a trailing 30d band, so wallets drop out when idle and re-enter once they transact again."
         )
+    fee_summary = _aggregate_fee_by_window(
+        cohort_retention,
+        cohort_fees,
+        available_windows,
+    )
+    if fee_summary:
+        detail_parts.append(
+            "Orange bars show Avg NV per funded wallet (STX), weighted by wallets with fee observations in the same cohort slice."
+        )
     detail_html = (
         f"<p class='note retention-note'>{' '.join(detail_parts)}</p>" if detail_parts else ""
     )
@@ -839,6 +920,24 @@ def render_retention_blended_curve(
         marker=dict(color=RETENTION_SEGMENT_COLORS["All"], size=8),
         hovertemplate="<b>Day %{x}</b><br>Retention %{y:.1f}%<extra></extra>",
     )
+    if fee_summary:
+        fee_windows = [pt.window_days for pt in points if pt.window_days in fee_summary]
+        fee_values = [fee_summary[win]["avg_fee"] for win in fee_windows]
+        fee_obs = [fee_summary[win]["observed"] for win in fee_windows]
+        if any(fee_values):
+            fig.add_bar(
+                x=fee_windows,
+                y=fee_values,
+                name="Avg NV per funded wallet (STX)",
+                marker_color="#f97316",
+                yaxis="y2",
+                opacity=0.65,
+                hovertemplate=(
+                    "<b>Day %{x}</b><br>Avg NV %{y:.3f} STX"
+                    "<br>Wallets observed: %{customdata:,}<extra></extra>"
+                ),
+                customdata=fee_obs,
+            )
     fig.update_layout(
         template="plotly_dark",
         height=420,
@@ -848,6 +947,15 @@ def render_retention_blended_curve(
         xaxis=dict(tickmode="array", tickvals=[0, *sorted({int(w) for w in windows if int(w) > 0})]),
         margin=dict(t=30, r=10, l=60, b=60),
     )
+    if fee_summary:
+        fig.update_layout(
+            yaxis2=dict(
+                title="Avg NV per funded wallet (STX)",
+                overlaying="y",
+                side="right",
+                rangemode="tozero",
+            ),
+        )
     table_html = _retention_table_html(
         series_map,
         available_windows,
@@ -863,6 +971,10 @@ def render_retention_blended_curve(
         "Percentages share a single eligible cohort so windows stay comparable. Wallets are only retained "
         "while they keep transacting in the trailing survival band; they immediately rejoin once fresh activity appears."
     )
+    if fee_summary:
+        footnote = (
+            f"{footnote} Avg NV bars are weighted by wallets with fee observations in the same cohorts."
+        )
     anchor_note = (
         f"Longest available window currently plotted: {anchor_window}d "
         + (
@@ -873,6 +985,166 @@ def render_retention_blended_curve(
         if anchor_window
         else ""
     )
+
+    custom_html = ""
+    if cohort_retention is not None and not cohort_retention.empty:
+        custom_source = cohort_retention[[
+            "activation_date",
+            "window_days",
+            "cohort_size",
+            "retained_wallets",
+        ]].dropna(subset=["activation_date", "window_days", "cohort_size"])
+        if not custom_source.empty:
+            custom_source = custom_source.copy()
+            custom_source["activation_date"] = pd.to_datetime(
+                custom_source["activation_date"], utc=True, errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+            custom_source = custom_source.dropna(subset=["activation_date"])
+            if not custom_source.empty:
+                custom_source["window_days"] = custom_source["window_days"].astype(int)
+                custom_source["cohort_size"] = custom_source["cohort_size"].astype(int)
+                custom_source["retained_wallets"] = custom_source["retained_wallets"].fillna(0).astype(int)
+                dates = custom_source["activation_date"].dropna().sort_values()
+                if not dates.empty:
+                    min_date = dates.iloc[0]
+                    max_date = dates.iloc[-1]
+                    start_idx = max(0, len(dates) - 30)
+                    default_start = dates.iloc[start_idx]
+                    default_end = max_date
+                    data_payload = html.escape(json.dumps(custom_source.to_dict(orient="records")))
+                    windows_payload = html.escape(json.dumps(sorted({int(w) for w in available_windows})))
+                    custom_base = secrets.token_hex(4)
+                    start_id = f"retention-range-start-{custom_base}"
+                    end_id = f"retention-range-end-{custom_base}"
+                    apply_id = f"retention-range-apply-{custom_base}"
+                    chart_id = f"retention-range-chart-{custom_base}"
+                    table_id = f"retention-range-table-{custom_base}"
+                    summary_id = f"retention-range-summary-{custom_base}"
+                    data_id = f"retention-range-data-{custom_base}"
+                    custom_html = f"""
+<div class='retention-custom'>
+  <h4>Custom cohort slice (funded on D0)</h4>
+  <p class='note'>Set a start/end activation date to isolate specific cohorts. Selecting the same day focuses that cohort only.</p>
+  <div class='retention-custom-controls'>
+    <label>Start date<input type='date' id='{start_id}' min='{min_date}' max='{max_date}' value='{default_start}' /></label>
+    <label>End date<input type='date' id='{end_id}' min='{min_date}' max='{max_date}' value='{default_end}' /></label>
+    <button type='button' id='{apply_id}'>Apply</button>
+    <span class='retention-custom-summary' id='{summary_id}'></span>
+  </div>
+  <div id='{chart_id}' style='min-height:320px;'></div>
+  <div id='{table_id}'></div>
+</div>
+<script type="application/json" id='{data_id}'>{data_payload}</script>
+<script>
+(function() {{
+  const dataEl = document.getElementById('{data_id}');
+  if (!dataEl) {{ return; }}
+  const rawData = JSON.parse(dataEl.textContent || '[]');
+  if (!rawData.length || !window) {{ return; }}
+  const windows = {windows_payload};
+  const cohortSizes = new Map();
+  rawData.forEach((row) => {{
+    if (!cohortSizes.has(row.activation_date)) {{
+      cohortSizes.set(row.activation_date, row.cohort_size);
+    }}
+  }});
+  const dates = Array.from(cohortSizes.keys()).sort();
+  if (!dates.length) {{ return; }}
+  const startInput = document.getElementById('{start_id}');
+  const endInput = document.getElementById('{end_id}');
+  const applyBtn = document.getElementById('{apply_id}');
+  const chartEl = document.getElementById('{chart_id}');
+  const tableEl = document.getElementById('{table_id}');
+  const summaryEl = document.getElementById('{summary_id}');
+  function aggregate(start, end) {{
+    const subset = rawData.filter((row) => row.activation_date >= start && row.activation_date <= end);
+    return windows.map((window) => {{
+      const rows = subset.filter((row) => row.window_days === window);
+      const maturedDates = Array.from(new Set(rows.map((row) => row.activation_date)));
+      const eligible = maturedDates.reduce((acc, date) => acc + (cohortSizes.get(date) || 0), 0);
+      const retained = rows.reduce((acc, row) => acc + row.retained_wallets, 0);
+      return {{ window_days: window, retention_pct: eligible > 0 ? (retained / eligible) * 100 : null, eligible }};
+    }});
+  }}
+  function render(start, end) {{
+    let s = start || dates[0];
+    let e = end || dates[dates.length - 1];
+    if (s > e) {{ const tmp = s; s = e; e = tmp; }}
+    const points = aggregate(s, e);
+    const usable = points.filter((pt) => pt.retention_pct !== null);
+    if (startInput) {{ startInput.value = s; }}
+    if (endInput) {{ endInput.value = e; }}
+    if (!usable.length) {{
+      if (summaryEl) {{ summaryEl.textContent = 'Selected range has no cohorts that have matured for these windows yet.'; }}
+      if (chartEl && window.Plotly) {{
+        window.Plotly.react(chartEl, [], {{ template: 'plotly_dark', title: 'No data for selected range' }}, {{displayModeBar: false}});
+      }}
+      if (tableEl) {{ tableEl.innerHTML = ''; }}
+      return;
+    }}
+    if (chartEl && window.Plotly) {{
+      const labels = usable.map((pt) => `D${{pt.window_days}}`);
+      const values = usable.map((pt) => pt.retention_pct);
+      const eligible = usable.map((pt) => pt.eligible);
+      window.Plotly.react(
+        chartEl,
+        [{{
+          x: labels,
+          y: values,
+          mode: 'lines+markers',
+          line: {{ color: '#60a5fa', width: 3 }},
+          marker: {{ size: 8 }},
+          hovertemplate: '<b>%{{x}}</b><br>Retention %{{y:.2f}}%<br>Eligible %{{text}}<extra></extra>',
+          text: eligible.map((val) => val.toLocaleString()),
+        }}],
+        {{
+          template: 'plotly_dark',
+          title: 'Cohort slice retention',
+          xaxis: {{ title: 'Days since activation (D0)' }},
+          yaxis: {{ title: 'Retention %', range: [0, 100], ticksuffix: '%' }},
+        }},
+        {{ displayModeBar: false }}
+      );
+    }}
+    if (tableEl) {{
+      const rows = usable
+        .map((pt) => {{
+          const pct = pt.retention_pct === null ? '—' : pt.retention_pct.toFixed(2) + '%';
+          return `<tr><td>D${{pt.window_days}}</td><td>${{pct}}</td><td>${{pt.eligible.toLocaleString()}}</td></tr>`;
+        }})
+        .join('');
+      tableEl.innerHTML = `<table class="curve-table"><thead><tr><th>Window</th><th>Retention %</th><th>Eligible wallets</th></tr></thead><tbody>${{rows}}</tbody></table>`;
+    }}
+    const longest = usable[usable.length - 1];
+    if (summaryEl) {{
+      const eligibleLongest = longest ? longest.eligible : 0;
+      summaryEl.textContent = eligibleLongest
+        ? `Range ${{s}} → ${{e}} · D${{windows[windows.length - 1]}} eligible wallets: ${{eligibleLongest.toLocaleString()}}`
+        : `Range ${{s}} → ${{e}} · No cohorts have matured to D${{windows[windows.length - 1]}} yet.`;
+    }}
+  }}
+  function scheduleInit() {{
+    if (window.Plotly && typeof window.Plotly.react === 'function') {{
+      render('{default_start}', '{default_end}');
+    }} else {{
+      setTimeout(scheduleInit, 80);
+    }}
+  }}
+  if (applyBtn) {{ applyBtn.addEventListener('click', () => render(startInput.value, endInput.value)); }}
+  if (startInput) {{
+    startInput.min = '{min_date}';
+    startInput.max = '{max_date}';
+    startInput.addEventListener('change', () => render(startInput.value, endInput.value));
+  }}
+  if (endInput) {{
+    endInput.min = '{min_date}';
+    endInput.max = '{max_date}';
+    endInput.addEventListener('change', () => render(startInput.value, endInput.value));
+  }}
+  scheduleInit();
+}})();
+</script>
+"""
     return "\n".join(
         [
             "<div class='retention-curve'>",
@@ -885,6 +1157,7 @@ def render_retention_blended_curve(
             f"  <div class='curve-chart'>{pio.to_html(fig, include_plotlyjs='cdn', full_html=False)}</div>",
             f"  <div class='curve-table-wrapper'>{table_html}</div>",
             "</div>",
+            custom_html,
             f"<p class='note'>{footnote or ''} {DATA_COVERAGE_NOTE} {anchor_note}</p>",
             "</div>",
         ]
@@ -974,6 +1247,7 @@ def render_retention_section(
     cumulative_panel: pd.DataFrame | None = None,
     section_id: str = "roi-retention",
     heading: str = "Retention",
+    cohort_fees: pd.DataFrame | None = None,
 ) -> str:
     if (
         retention.empty
@@ -991,6 +1265,8 @@ def render_retention_section(
     blended_html = render_retention_blended_curve(
         survival_panel,
         windows=RETENTION_CURVE_WINDOWS,
+        cohort_retention=retention,
+        cohort_fees=cohort_fees,
         title="Blended funded retention (survival)",
         tooltip=(
             "Wallets funded on D0. A point at day N counts wallets with activity inside the trailing retention band "
@@ -1432,6 +1708,7 @@ def build_wallet_dashboard(
     retention_active_band: pd.DataFrame | None = None,
     retention_segmented: pd.DataFrame | None = None,
     retention_segmented_cumulative: pd.DataFrame | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> None:
     """Generate the wallet growth dashboard HTML using cached Hiro transactions."""
     generated_at = last_updated or datetime.now(UTC)
@@ -1439,13 +1716,23 @@ def build_wallet_dashboard(
     if spot_price is None or spot_price_ts is None:
         spot_price_ts, spot_price = _load_spot_price()
     wallet_today = pd.Timestamp.now(tz="UTC").floor("D")
+
+    def pulse(fraction: float, detail: str) -> None:
+        if progress_callback is None:
+            return
+        bounded = min(max(fraction, 0.0), 0.99)
+        progress_callback(bounded, detail)
+
+    pulse(0.05, "Preparing wallet activity inputs")
     if metrics_bundle is None and not skip_history_sync:
+        pulse(0.1, "Syncing transaction history")
         wallet_metrics.ensure_transaction_history(
             max_days=max_days,
             force_refresh=force_refresh,
         )
 
     if metrics_bundle is not None:
+        pulse(0.25, "Loading cached wallet bundle")
         activity = metrics_bundle.activity.copy()
         first_seen = metrics_bundle.first_seen.copy()
         new_wallets = metrics_bundle.new_wallets.copy()
@@ -1453,6 +1740,7 @@ def build_wallet_dashboard(
         retention = metrics_bundle.retention.copy()
         fee_per_wallet = metrics_bundle.fee_per_wallet.copy()
     else:
+        pulse(0.25, "Loading wallet activity from DuckDB")
         activity = wallet_metrics.load_recent_wallet_activity(
             max_days=max_days,
             db_path=wallet_db_path,
@@ -1463,6 +1751,7 @@ def build_wallet_dashboard(
             first_seen,
             windows,
         )
+        pulse(0.4, "Computing retention + fee aggregates")
         fee_per_wallet = wallet_metrics.compute_fee_per_wallet(
             activity,
             first_seen,
@@ -1490,6 +1779,7 @@ def build_wallet_dashboard(
     value_flags = pd.DataFrame(columns=["address", "activation_date", "value_30d"])
     need_segmented = retention_segmented is None or retention_segmented_cumulative is None
     if need_segmented and not first_seen.empty:
+        pulse(0.5, "Ensuring funded activation snapshots")
         wallet_metrics.ensure_activation_day_funded_snapshots(
             first_seen,
             lookback_days=min(3, max_days),
@@ -1503,6 +1793,7 @@ def build_wallet_dashboard(
         )
         value_flags = wallet_metrics.compute_value_flags(activity, first_seen)
     if retention_segmented_cumulative is None:
+        pulse(0.6, "Computing cumulative retention panel")
         retention_segmented_cumulative = wallet_metrics.compute_segmented_retention_panel(
             activity,
             first_seen,
@@ -1513,6 +1804,7 @@ def build_wallet_dashboard(
             persist_path=wallet_metrics.SEGMENTED_RETENTION_PATH,
         )
     if retention_segmented is None:
+        pulse(0.7, "Computing survival retention panel")
         retention_segmented = wallet_metrics.compute_segmented_retention_panel(
             activity,
             first_seen,
@@ -1532,6 +1824,7 @@ def build_wallet_dashboard(
             persist=True,
         )
 
+    pulse(0.8, "Rendering wallet dashboard visuals")
     retro_summary, retro_eligible = compute_retrospective_activity_summary(
         activity,
         funded_activation,
@@ -1721,6 +2014,7 @@ def build_wallet_dashboard(
             ),
             section_id="wallet-retention",
             heading="Cohort Retention",
+            cohort_fees=fee_per_wallet,
         )
 
     fee_html = ""
@@ -1798,6 +2092,7 @@ def build_wallet_dashboard(
         last_updated=generated_at,
         nav_prefix="../",
     )
+    pulse(0.95, "Wallet dashboard HTML generated")
 
 
 # NOTE: Retention visualization mock-up. Not linked in production nav; keep for future experiments.
@@ -2699,18 +2994,31 @@ def build_value_dashboard(
     cpa_target_stx: float = 5.0,
     spot_price: float | None = None,
     spot_price_ts: datetime | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> None:
     """Generate CPI/CPA-style wallet value dashboard with PoX linkage."""
     generated_at = datetime.now(UTC)
     if spot_price is None or spot_price_ts is None:
         spot_price_ts, spot_price = _load_spot_price()
+    def pulse(fraction: float, detail: str) -> None:
+        if progress_callback is None:
+            return
+        bounded = min(max(fraction, 0.0), 0.99)
+        progress_callback(bounded, detail)
+
+    pulse(0.05, "Preparing WALTV data pipeline")
+    def pipeline_progress(sub_fraction: float, detail: str) -> None:
+        pulse(0.05 + 0.6 * min(max(sub_fraction, 0.0), 1.0), detail)
+
     data = wallet_value.compute_value_pipeline(
         max_days=max_days,
         windows=windows,
         force_refresh=force_refresh,
         wallet_db_path=wallet_db_path,
         skip_history_sync=skip_history_sync,
+        progress_callback=pipeline_progress if progress_callback else None,
     )
+    pulse(0.68, "Summarizing WALTV windows and funnels")
     windows_df = data["windows"]
     cls = data["classification"]
     activity_df = data["activity"]
@@ -2754,6 +3062,7 @@ def build_value_dashboard(
         trailing_stats[win] = wallet_value.summarize_trailing_window_stats(
             trailing_df, window_days=win
         )
+    pulse(0.75, "Loading PoX linkage data")
 
     try:
         pox_summary = pox_yields.get_cycle_yield_summary(
@@ -2776,6 +3085,7 @@ def build_value_dashboard(
         LOGGER.warning("PoX data unavailable: %s", exc)
         pox_summary = {}
         cycle_apy_df = pd.DataFrame()
+    pulse(0.85, "Rendering WALTV dashboard components")
 
     recent_cycles = (
         cycle_apy_df.sort_values("cycle_number", ascending=False)
@@ -3203,6 +3513,7 @@ def build_value_dashboard(
         last_updated=generated_at,
         nav_prefix="../",
     )
+    pulse(0.95, "Wallet value dashboard HTML generated")
 
 
 def build_roi_dashboard(
@@ -3239,6 +3550,27 @@ def build_roi_dashboard(
         )
 
     retention = inputs.retention
+    fee_for_retention = pd.DataFrame(
+        columns=["activation_date", "window_days", "avg_fee_stx", "wallets_observed"]
+    )
+    if not inputs.windows_agg.empty:
+        fee_for_retention = (
+            inputs.windows_agg.groupby(["activation_date", "window_days"])[
+                ["fee_stx_sum", "address"]
+            ]
+            .agg({"fee_stx_sum": "sum", "address": "count"})
+            .rename(columns={"address": "wallets_observed"})
+            .reset_index()
+        )
+        fee_for_retention["avg_fee_stx"] = fee_for_retention.apply(
+            lambda row: row["fee_stx_sum"] / row["wallets_observed"]
+            if row["wallets_observed"]
+            else 0.0,
+            axis=1,
+        )
+        fee_for_retention = fee_for_retention[
+            ["activation_date", "window_days", "avg_fee_stx", "wallets_observed"]
+        ]
     waltv_all = roi.summarize_waltv_by_window(inputs.windows_agg, inputs.first_seen)
     survivors = roi.waltv_survivors_only(inputs.windows_agg)
     expected_180 = roi.expected_waltv_180(
@@ -3424,6 +3756,7 @@ def build_roi_dashboard(
             cumulative_panel=inputs.retention_segmented_cumulative,
             section_id="roi-retention",
             heading="Retention",
+            cohort_fees=fee_for_retention,
         )
     )
     sections.append(
@@ -3629,35 +3962,89 @@ def main() -> None:
     skip_history_sync = args.skip_wallet_history_sync
     snapshot_path: Path | None = None
 
-    if args.wallet_db_snapshot:
-        snapshot_path = wallet_metrics.create_db_snapshot()
-        wallet_db_path = snapshot_path
-        skip_history_sync = True
-        print(f"Using wallet DB snapshot at {snapshot_path}")
-    elif wallet_db_path is not None and not skip_history_sync:
-        print(
-            "Custom wallet DB path detected; skipping history sync to avoid touching the primary DB."
-        )
-        skip_history_sync = True
+    build_wallet = (
+        not args.value_only and not args.one_pager_only and not args.retention_demo_only
+    )
+    build_macro = (
+        not args.value_only and not args.one_pager_only and not args.retention_demo_only
+    )
+    build_value = not args.one_pager_only and not args.retention_demo_only
+    build_roi = not args.retention_demo_only
+    build_retention_demo = args.retention_demo or args.retention_demo_only
 
-    spot_price_ts, spot_price = _load_spot_price()
+    stage_plan: list[tuple[str, str]] = [("prepare", "Preparing wallet DB snapshot and prices")]
+    if build_wallet:
+        stage_plan.append(("wallet", "Building wallet dashboard"))
+    if build_value:
+        stage_plan.append(("value", "Building wallet value dashboard"))
+    if build_macro:
+        stage_plan.append(("macro", "Building macro dashboard"))
+    if build_roi:
+        stage_plan.append(("roi", "Building ROI dashboard"))
+    if build_retention_demo:
+        stage_plan.append(("retention", "Building retention playground"))
+    publish_needed = any([build_wallet, build_value, build_macro, build_roi, build_retention_demo])
+    if publish_needed:
+        stage_plan.append(("publish", "Copying dashboards to public/"))
+    if args.wallet_db_snapshot:
+        stage_plan.append(("cleanup", "Removing temporary wallet DB snapshot"))
+
+    total_stage_steps = len(stage_plan) if stage_plan else 1
+    completed_stage_steps = 0
+    stage_descriptions = dict(stage_plan)
+
+    def _stage_label(stage: str, detail: str | None = None) -> str:
+        return detail or stage_descriptions.get(stage, stage)
+
+    def _start_stage(stage: str, detail: str | None = None) -> None:
+        ops_events.emit_progress(
+            stage=stage,
+            current=completed_stage_steps,
+            total=total_stage_steps,
+            detail=_stage_label(stage, detail),
+        )
+
+    def _finish_stage(stage: str, detail: str | None = None) -> None:
+        nonlocal completed_stage_steps
+        completed_stage_steps += 1
+        ops_events.emit_progress(
+            stage=stage,
+            current=completed_stage_steps,
+            total=total_stage_steps,
+            detail=_stage_label(stage, detail),
+        )
+
+    def _stage_progress(stage: str, fraction: float, detail: str) -> None:
+        bounded = min(max(fraction, 0.0), 0.99)
+        ops_events.emit_progress(
+            stage=stage,
+            current=completed_stage_steps + bounded,
+            total=total_stage_steps,
+            detail=_stage_label(stage, detail),
+        )
+
+    _start_stage("prepare", "Preparing wallet DB snapshot and prices")
 
     try:
+        if args.wallet_db_snapshot:
+            snapshot_path = wallet_metrics.create_db_snapshot()
+            wallet_db_path = snapshot_path
+            skip_history_sync = True
+            print(f"Using wallet DB snapshot at {snapshot_path}")
+        elif wallet_db_path is not None and not skip_history_sync:
+            print(
+                "Custom wallet DB path detected; skipping history sync to avoid touching the primary DB."
+            )
+            skip_history_sync = True
+
+        spot_price_ts, spot_price = _load_spot_price()
+        _finish_stage("prepare", "Input snapshot ready")
+
         built_wallet = False
         built_macro = False
         built_value = False
         built_roi = False
         built_retention_demo = False
-
-        build_wallet = (
-            not args.value_only and not args.one_pager_only and not args.retention_demo_only
-        )
-        build_macro = (
-            not args.value_only and not args.one_pager_only and not args.retention_demo_only
-        )
-        build_value = not args.one_pager_only and not args.retention_demo_only
-        build_roi = not args.retention_demo_only
-        build_retention_demo = args.retention_demo or args.retention_demo_only
 
         wallet_bundle_arg = cached_wallet_bundle if cached_wallet_bundle is not None else None
         wallet_retention_active_arg = (
@@ -3678,6 +4065,10 @@ def main() -> None:
         roi_inputs_arg = cached_roi_inputs if cached_roi_inputs is not None else None
 
         if build_wallet:
+            def wallet_stage_progress(fraction: float, detail: str) -> None:
+                _stage_progress("wallet", fraction, detail)
+
+            _start_stage("wallet", "Collecting wallet metrics and rendering dashboard")
             build_wallet_dashboard(
                 output_path=wallet_html,
                 max_days=args.wallet_max_days,
@@ -3691,10 +4082,16 @@ def main() -> None:
                 retention_active_band=wallet_retention_active_arg,
                 retention_segmented=wallet_segmented_arg,
                 retention_segmented_cumulative=wallet_segmented_cumulative_arg,
+                progress_callback=wallet_stage_progress if build_wallet else None,
             )
             built_wallet = True
+            _finish_stage("wallet", "Wallet dashboard complete")
 
         if build_value:
+            def value_stage_progress(fraction: float, detail: str) -> None:
+                _stage_progress("value", fraction, detail)
+
+            _start_stage("value", "Computing WALTV cohorts and rendering value dashboard")
             build_value_dashboard(
                 output_path=value_html,
                 max_days=args.wallet_max_days,
@@ -3705,18 +4102,23 @@ def main() -> None:
                 cpa_target_stx=args.cpa_target_stx,
                 spot_price=spot_price,
                 spot_price_ts=spot_price_ts,
+                progress_callback=value_stage_progress if build_value else None,
             )
             built_value = True
+            _finish_stage("value", "Value dashboard complete")
 
         if build_macro:
+            _start_stage("macro", "Refreshing macro dashboard panels")
             build_macro_dashboard(
                 output_path=macro_html,
                 history_days=args.macro_history_days,
                 force_refresh=args.force_refresh,
             )
             built_macro = True
+            _finish_stage("macro", "Macro dashboard complete")
 
         if build_roi:
+            _start_stage("roi", "Building ROI one-pager")
             build_roi_dashboard(
                 output_path=roi_html,
                 max_days=args.wallet_max_days,
@@ -3733,8 +4135,10 @@ def main() -> None:
                 precomputed_inputs=roi_inputs_arg,
             )
             built_roi = True
+            _finish_stage("roi", "ROI dashboard complete")
 
         if build_retention_demo:
+            _start_stage("retention", "Rendering retention playground demo")
             build_retention_demo_dashboard(
                 output_path=retention_demo_html,
                 max_days=args.wallet_max_days,
@@ -3744,14 +4148,18 @@ def main() -> None:
                 skip_history_sync=skip_history_sync,
             )
             built_retention_demo = True
+            _finish_stage("retention", "Retention playground complete")
     finally:
         if snapshot_path is not None and snapshot_path.exists():
+            _start_stage("cleanup", "Removing wallet DB snapshot")
             snapshot_path.unlink()
             print(f"Removed wallet DB snapshot {snapshot_path}")
+            _finish_stage("cleanup", "Snapshot removed")
 
     # Copy dashboards into public structure for deployment.
     if args.public_dir:
-        if built_wallet:
+        if publish_needed:
+            _start_stage("publish", "Copying dashboards to public/")
             wallet_public = args.public_dir / "wallet" / "index.html"
             wallet_public.parent.mkdir(parents=True, exist_ok=True)
             wallet_public.write_text(wallet_html.read_text(encoding="utf-8"), encoding="utf-8")
@@ -3783,6 +4191,8 @@ def main() -> None:
 
         copy_static_assets(args.public_dir)
         build_public_index(args.public_dir)
+        if publish_needed:
+            _finish_stage("publish", "Dashboard assets copied")
 
 
 if __name__ == "__main__":

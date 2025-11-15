@@ -95,6 +95,36 @@ Outputs land in `out/roi_dashboard.html` and copy to `public/roi/index.html` whe
   - PoX linkage chart/table showing miner BTC commits vs APY.
   - WALTV window comparison table for 30/60/90d cohorts.
 
+### 4a. Ops Runner + TUI monitoring
+
+Use `scripts/ops_runner.py` to launch long-running commands inside tmux sessions with
+timestamped logs, then track them with the TUI monitor:
+
+```bash
+# List available jobs (balance refresh, cache refresh, dashboard builds, ROI)
+python scripts/ops_runner.py tasks
+
+# Kick off the wallet build in a detached tmux session (logs/ops_runner/build-wallet/)
+python scripts/ops_runner.py start build-wallet
+
+# Watch logs without attaching to tmux
+python scripts/ops_runner.py tail build-wallet --follow
+
+# Launch the TUI monitor (shows progress %, stage, liveness)
+python scripts/ops_tui.py
+
+# Check overall status
+python scripts/ops_runner.py status
+```
+
+Internally the runner creates tmux sessions named `ops-<task>` (e.g.
+`tmux attach -t ops-build-wallet`), so multiple jobs can run in parallel without
+blocking the current terminal. Logs persist under `logs/ops_runner/<task>/`.
+Use `python scripts/ops_runner.py stop <task>` if a session needs to be aborted.
+The TUI (`scripts/ops_tui.py`) reads those logs to show current stage (“what’s
+downloading”), start time, elapsed duration, and a running percentage; it also
+flags stale sessions when no output is written for 60 seconds.
+
 ---
 
 ## 5. Troubleshooting

@@ -372,6 +372,7 @@ def ensure_wallet_balances(
     delay_seconds: float = 0.1,
     batch_size: int | None = None,
     max_workers: int = 10,
+    progress_callback: Callable[[int, int, int, int], None] | None = None,
 ) -> int:
     """Ensure a balance snapshot exists for all addresses on the given date.
     
@@ -426,16 +427,22 @@ def ensure_wallet_balances(
             return None
     
     # Process in batches if specified, otherwise process all sequentially
+    total_batches = 0
     if batch_size and batch_size > 0:
         batches = [missing[i:i + batch_size] for i in range(0, len(missing), batch_size)]
         LOGGER.info(
             "Processing %d addresses in %d batches of %d (max %d concurrent requests per batch)",
             len(missing), len(batches), batch_size, max_workers
         )
+        total_batches = len(batches)
     else:
         batches = [[addr] for addr in missing]
         max_workers = 1  # Sequential if no batching
-    
+        total_batches = len(batches)
+    if progress_callback:
+        progress_callback(0, total_batches, 0, len(missing))
+
+    processed_addresses = 0
     for batch_idx, batch in enumerate(batches):
         # Process batch with concurrent requests
         batch_rows = []
@@ -451,12 +458,16 @@ def ensure_wallet_balances(
                     LOGGER.warning("✗ Exception fetching balance for %s: %s", addr, exc)
         
         rows.extend(batch_rows)
-        
+        processed_addresses += len(batch)
+
         # Delay between batches to respect rate limits
         if batch_idx < len(batches) - 1:
             time.sleep(delay_seconds)
             LOGGER.info("Completed batch %d/%d, processed %d/%d addresses", 
                        batch_idx + 1, len(batches), len(rows), len(missing))
+        if progress_callback:
+            progress_callback(batch_idx + 1, total_batches, processed_addresses, len(missing))
+
     
     # Insert all rows, including failed ones (marked as unfunded)
     with _connect(db_path=db_path) as conn:
