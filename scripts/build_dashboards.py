@@ -7,12 +7,12 @@ import argparse
 import html
 import json
 import logging
+import math
 import re
 import secrets
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from string import Template
 from typing import Callable, Iterable, Sequence
 
 import numpy as np
@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import dashboard_cache
+from src import dashboard_styles
 from src import external_inputs
 from src import macro_analysis
 from src import macro_data
@@ -52,6 +53,10 @@ RETENTION_SEGMENT_LABELS: dict[str, str] = {
     "Value": "Value (≥1 STX fees by D30)",
     "Non-value": "Non-value (<1 STX by D30)",
 }
+CONTRACT_TAGS: dict[str, str] = {
+    # Example: "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2": "DEX",
+}
+CONTRACT_TAG_FALLBACK = "Unmapped"
 RETROSPECTIVE_ACTIVITY_WINDOWS: tuple[int, ...] = (1, 15, 30, 60, 90, 180)
 DATA_COVERAGE_START = wallet_metrics.METRICS_DATA_START
 DATA_COVERAGE_LABEL = DATA_COVERAGE_START.strftime("%Y-%m-%d")
@@ -63,6 +68,7 @@ DATA_COVERAGE_NOTE = (
 NAV_LINKS: list[tuple[str, str, str]] = [
     ("roi", "ROI", "roi/index.html"),
     ("wallet", "Wallet", "wallet/index.html"),
+    ("breakdown", "Wallet Breakdown", "breakdown/index.html"),
     ("value", "Value", "value/index.html"),
     ("macro", "Macro", "macro/index.html"),
 ]
@@ -117,175 +123,6 @@ for idx, color in enumerate(RETENTION_BUCKET_COLORS):
 BODY_RE = re.compile(r"<body[^>]*>(?P<body>.*)</body>", re.S | re.I)
 STYLE_RE = re.compile(r"<style[^>]*>.*?</style>", re.S | re.I)
 
-COINBASE_CALC_STYLE = """
-<style>
-.coinbase-wrapper {
-  max-width: 960px;
-  margin: 0 auto;
-  background: #161b2e;
-  border: 1px solid #2f354a;
-  border-radius: 12px;
-  padding: 2rem;
-  color: #f5f6fa;
-}
-.coinbase-wrapper h1,
-.coinbase-wrapper h2,
-.coinbase-wrapper h3 {
-  color: #70e1ff;
-}
-.coinbase-wrapper .subtitle {
-  color: #b5bfd9;
-  margin-bottom: 1.5rem;
-}
-.coinbase-wrapper .baseline {
-  background: #101522;
-  border-left: 4px solid #70e1ff;
-  padding: 1rem;
-  margin-bottom: 1.5rem;
-}
-.coinbase-wrapper .baseline-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
-}
-.coinbase-wrapper .baseline-stat {
-  color: #b5bfd9;
-  font-size: 0.9rem;
-}
-.coinbase-wrapper .baseline-stat strong {
-  font-size: 1.25rem;
-  color: #f5f6fa;
-}
-.coinbase-wrapper .presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-}
-.coinbase-wrapper .preset-btn {
-  flex: 1;
-  min-width: 140px;
-  padding: 0.9rem 1.2rem;
-  border-radius: 8px;
-  border: 1px solid #2f354a;
-  background: linear-gradient(135deg, #1f2840, #101522);
-  color: #f5f6fa;
-  cursor: pointer;
-  transition: border-color 0.2s, transform 0.2s;
-}
-.coinbase-wrapper .preset-btn:hover {
-  border-color: #70e1ff;
-  transform: translateY(-1px);
-}
-.coinbase-wrapper .preset-btn .target {
-  font-size: 1.2rem;
-  font-weight: 600;
-}
-.coinbase-wrapper .preset-btn .desc {
-  color: #b5bfd9;
-  font-size: 0.8rem;
-}
-.coinbase-wrapper .slider-group {
-  margin-bottom: 1.75rem;
-}
-.coinbase-wrapper .slider-label {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.5rem;
-  font-size: 0.95rem;
-  color: #b5bfd9;
-}
-.coinbase-wrapper .slider-value {
-  font-size: 1.35rem;
-  font-weight: 600;
-  color: #70e1ff;
-  border: 1px solid #2f354a;
-  border-radius: 6px;
-  padding: 0.2rem 0.6rem;
-  background: #101522;
-}
-.coinbase-wrapper input[type="range"] {
-  width: 100%;
-  height: 6px;
-  border-radius: 3px;
-  background: #2f354a;
-}
-.coinbase-wrapper input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #70e1ff;
-  border: 2px solid #101522;
-}
-.coinbase-wrapper .results {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-.coinbase-wrapper .result-card {
-  background: #101522;
-  border: 1px solid #2f354a;
-  border-radius: 10px;
-  padding: 1rem;
-  text-align: center;
-}
-.coinbase-wrapper .result-value {
-  font-size: 2rem;
-  font-weight: 600;
-  color: #70e1ff;
-}
-.coinbase-wrapper .result-label {
-  color: #b5bfd9;
-  font-size: 0.9rem;
-  margin-top: 0.4rem;
-}
-.coinbase-wrapper .efficiency {
-  color: #f5f6fa;
-  font-size: 0.95rem;
-  margin-bottom: 1rem;
-}
-.coinbase-wrapper .efficiency strong {
-  color: #70e1ff;
-}
-.coinbase-wrapper .notes {
-  color: #b5bfd9;
-  font-size: 0.9rem;
-  line-height: 1.5;
-}
-.coinbase-wrapper .notes li {
-  margin-left: 1.2rem;
-  margin-bottom: 0.4rem;
-}
-@media (max-width: 600px) {
-  .coinbase-wrapper {
-    padding: 1.25rem;
-  }
-  .coinbase-wrapper .slider-label {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.3rem;
-  }
-}
-</style>
-"""
-
-PLOTLY_EMBED_STYLE = """
-<style>
-.plotly-embed {
-  background: #161b2e;
-  border: 1px solid #2f354a;
-  border-radius: 12px;
-  padding: 1.5rem;
-  overflow: auto;
-}
-</style>
-"""
-
 
 def _write_html(
     output_path: Path,
@@ -299,88 +136,35 @@ def _write_html(
     """Wrap the provided HTML snippets in a basic document and write to disk."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stamp = (last_updated or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M %Z")
-    html = "\n".join(
-        [
-            "<!DOCTYPE html>",
-            '<html lang="en">',
-            "<head>",
-            '  <meta charset="utf-8" />',
-            '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
-            f"  <title>{title}</title>",
-            '  <style type="text/css">',
-            "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; margin: 0 auto; padding: 2rem; max-width: 1100px; background: #101522; color: #f5f6fa; }",
-            "    h1, h2 { color: #70e1ff; }",
-            "    a { color: #70e1ff; }",
-            "    .topnav { position: sticky; top: 0; z-index: 10; background: #0f1420; border-bottom: 1px solid #2f354a; margin: -2rem -2rem 1rem -2rem; padding: 0.75rem 2rem; }",
-            "    .topnav a { margin-right: 1rem; color: #b5bfd9; text-decoration: none; font-size: 0.95rem; }",
-            "    .topnav a:hover, .topnav a.active { color: #70e1ff; text-decoration: underline; }",
-            "    .last-updated { font-size: 0.85rem; color: #7681a1; margin-bottom: 1.5rem; }",
-            "    table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }",
-            "    th, td { border: 1px solid #2f354a; padding: 0.5rem 0.75rem; text-align: left; }",
-            "    th { background: #1f2840; }",
-            "    tr:nth-child(even) { background: #161b2e; }",
-            "    .section { margin-bottom: 3rem; }",
-            "    .note { font-size: 0.9rem; color: #b5bfd9; margin-top: -1rem; margin-bottom: 1.5rem; }",
-            "    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }",
-            "    .kpi-card { background: #161b2e; padding: 1rem; border-radius: 8px; border: 1px solid #2f354a; }",
-            "    .kpi-label { text-transform: uppercase; font-size: 0.75rem; color: #7f8bb3; letter-spacing: 0.05em; }",
-            "    .kpi-label-row { display: flex; align-items: flex-start; gap: 0.5rem; }",
-            "    .kpi-label-text { flex: 1; }",
-            "    .kpi-badge { font-size: 0.65rem; text-transform: none; color: #9fb0d9; background: rgba(112,225,255,0.12); border: 1px solid #2f354a; border-radius: 999px; padding: 0.1rem 0.45rem; }",
-            "    .kpi-value { font-size: 1.5rem; margin-top: 0.25rem; color: #f5f6fa; }",
-            "    .kpi-subtext { font-size: 0.85rem; color: #7f8bb3; margin-top: 0.25rem; }",
-            "    .kpi-footer { font-size: 0.75rem; color: #9fb0d9; margin-top: 0.35rem; font-style: italic; }",
-            "    .tooltip-icon { position: relative; border: 1px solid #70e1ff; color: #70e1ff; background: rgba(112,225,255,0.12); border-radius: 999px; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; cursor: help; padding: 0; }",
-            "    .tooltip-icon::after { content: attr(data-tooltip); position: absolute; top: 120%; right: 0; width: 240px; background: #0f1420; border: 1px solid #2f354a; border-radius: 6px; padding: 0.6rem; color: #dfe6ff; font-size: 0.75rem; line-height: 1.4; opacity: 0; pointer-events: none; transition: opacity 0.15s ease-in-out; z-index: 20; }",
-            "    .tooltip-icon:hover::after, .tooltip-icon:focus-visible::after { opacity: 1; }",
-            "    .tooltip-icon:focus-visible { outline: 2px solid #70e1ff; outline-offset: 2px; }",
-            "    .tooltip-icon::-moz-focus-inner { border: 0; }",
-            "    .retention-toggle { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }",
-            "    .retention-toggle label { cursor: pointer; font-size: 0.9rem; color: #dfe6ff; display: flex; align-items: center; gap: 0.35rem; }",
-            "    .retention-toggle input { accent-color: #70e1ff; }",
-            "    .retention-view { margin-top: 1rem; }",
-            "    .retention-curve { background: #151b2c; border: 1px solid #2f354a; border-radius: 10px; padding: 1.25rem; }",
-            "    .retention-curve-header { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }",
-            "    .curve-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 260px); gap: 0.85rem; align-items: flex-start; width: 100%; }",
-            "    .curve-chart { min-width: 0; }",
-            "    .curve-table-wrapper { width: 100%; max-width: 260px; overflow: hidden; }",
-            "    .retention-note { margin: 0.2rem 0 0.8rem; font-size: 0.85rem; color: #9fb0d9; line-height: 1.45; }",
-            "    .retention-curve .note { margin-top: 0.9rem; position: relative; z-index: 2; line-height: 1.5; }",
-            "    .curve-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; background: #101628; }",
-            "    .curve-table th, .curve-table td { border: 1px solid #2f354a; padding: 0.4rem 0.6rem; text-align: left; color: #dfe6ff; }",
-            "    .curve-table th { background: #1b2338; font-weight: 600; }",
-            "    .retention-custom { margin-top: 1.25rem; padding: 1rem; border-radius: 10px; background: #101628; border: 1px solid #2f354a; }",
-            "    .retention-custom h4 { margin: 0 0 0.75rem; font-size: 1rem; color: #e2e8ff; }",
-            "    .retention-custom-controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; font-size: 0.9rem; color: #c7d2ff; }",
-            "    .retention-custom-controls label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.25rem; }",
-            "    .retention-custom-controls input { background: #0f1420; border: 1px solid #2f354a; border-radius: 6px; color: #f5f6fa; padding: 0.35rem 0.5rem; }",
-            "    .retention-custom-controls button { background: #2563eb; border: none; border-radius: 6px; padding: 0.45rem 0.9rem; color: #fff; cursor: pointer; font-weight: 600; }",
-            "    .retention-custom-controls button:disabled { opacity: 0.6; cursor: not-allowed; }",
-            "    .retention-custom-summary { font-size: 0.85rem; color: #9fb0d9; }",
-            "    @media (max-width: 960px) { .curve-body { grid-template-columns: 1fr; } }",
-            "  </style>",
-            "</head>",
-            "<body>",
-            "<div class='topnav'>",
-            "  <strong style='margin-right: 1rem; color:#f5f6fa;'>Stacks Analytics</strong>",
-        ]
-        + [
-            "  <a href='{href}'{active}>{label}</a>".format(
-                href=f"{nav_prefix}{href.lstrip('/')}",
-                active=" class='active'" if active_nav == key else "",
-                label=label,
-            )
-            for key, label, href in NAV_LINKS
-        ]
-        + [
-            "</div>",
-            f"<div class='last-updated'>Last updated {stamp}</div>",
-            *sections,
-            "</body>",
-            "</html>",
-        ]
-    )
-    output_path.write_text(html, encoding="utf-8")
+
+    nav_items = []
+    for key, label, href in NAV_LINKS:
+        active_attr = " class='active'" if active_nav == key else ""
+        final_href = f"{nav_prefix}{href.lstrip('/')}"
+        nav_items.append(f"<a href='{final_href}'{active_attr}>{label}</a>")
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <style type="text/css">
+{dashboard_styles.CSS_VARIABLES}
+{dashboard_styles.BASE_STYLE}
+  </style>
+</head>
+<body>
+<div class='topnav'>
+  <strong>Stacks Analytics</strong>
+  {''.join(nav_items)}
+</div>
+<div class='last-updated'>Last updated {stamp}</div>
+{''.join(sections)}
+</body>
+</html>"""
+
+    output_path.write_text(html_content, encoding="utf-8")
     print(f"Wrote {output_path}")
 
 
@@ -1539,8 +1323,8 @@ def render_metric_glossary() -> str:
     rows = [
         "<div class='section'>",
         "<h2>Metric Definitions</h2>",
-        "<div style='background:#1f2840;padding:1rem;border-radius:8px;border:1px solid #2f354a;'>",
-        "<ul style='margin:0;padding-left:1.25rem;line-height:1.5;'>",
+        "<div class='definitions'>",
+        "<ul>",
     ]
     for title, desc in items:
         rows.append(f"<li><strong>{title}:</strong> {desc}</li>")
@@ -1917,7 +1701,7 @@ def build_wallet_dashboard(
 
     # Add explanatory text for table metrics
     metric_definitions = """
-<div style="background: #1f2840; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; line-height: 1.5;">
+<div class="definitions">
   <strong>Metric Definitions:</strong><br/>
   • <strong>new_wallets_trailing:</strong> Count of unique addresses that made their first transaction within the trailing window<br/>
   • <strong>active_wallets_trailing:</strong> Count of unique addresses with any transaction activity in the trailing window<br/>
@@ -2093,6 +1877,571 @@ def build_wallet_dashboard(
         nav_prefix="../",
     )
     pulse(0.95, "Wallet dashboard HTML generated")
+
+
+def build_wallet_breakdown_dashboard(
+    *,
+    output_path: Path,
+    max_days: int,
+    windows: Sequence[int],
+    force_refresh: bool,
+    wallet_db_path: Path | None = None,
+    skip_history_sync: bool = False,
+    last_updated: datetime | None = None,
+    metrics_bundle: wallet_metrics.WalletMetricsBundle | None = None,
+    fetch_top_activity: bool = True,
+    top_n: int = 20,
+    next_cohort_size: int = 80,
+    max_pages_per_wallet: int = 200,
+    heatmap_wallets: int = 50,
+    heatmap_contracts: int = 15,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> None:
+    """Build Wallet Breakdown page with Pareto cohorts and top-wallet lists."""
+    generated_at = last_updated or datetime.now(UTC)
+    windows = sorted({int(w) for w in windows if int(w) > 0})
+    if not windows:
+        raise ValueError("At least one positive window is required for breakdown.")
+
+    def pulse(fraction: float, detail: str) -> None:
+        if progress_callback is None:
+            return
+        bounded = min(max(fraction, 0.0), 0.99)
+        progress_callback(bounded, detail)
+
+    if metrics_bundle is None and not skip_history_sync:
+        pulse(0.05, "Preparing wallet activity inputs")
+        wallet_metrics.ensure_transaction_history(
+            max_days=max_days,
+            force_refresh=force_refresh,
+        )
+
+    if metrics_bundle is not None:
+        pulse(0.15, "Loading cached wallet activity")
+        activity = metrics_bundle.activity.copy()
+    else:
+        pulse(0.15, "Loading wallet activity from DuckDB")
+        activity = wallet_metrics.load_recent_wallet_activity(
+            max_days=max_days,
+            db_path=wallet_db_path,
+        )
+
+    if activity.empty:
+        _write_html(
+            output_path,
+            "Wallet Breakdown",
+            ["<div class='section'><h1>Wallet Breakdown</h1><p>No wallet activity available.</p></div>"],
+            active_nav="breakdown",
+            last_updated=generated_at,
+            nav_prefix="../",
+        )
+        return
+
+    for col in ["contract_id", "contract_call_function", "contract_call_args"]:
+        if col not in activity.columns:
+            activity[col] = pd.NA
+
+    as_of_ts = pd.to_datetime(activity["block_time"]).max().tz_convert("UTC")
+
+    def _window_activity(source: pd.DataFrame, window: int) -> pd.DataFrame:
+        start = as_of_ts - pd.Timedelta(days=window)
+        return source[source["block_time"] >= start]
+
+    def _collect_top_addresses(source: pd.DataFrame) -> set[str]:
+        addresses: set[str] = set()
+        for window in windows:
+            scoped = _window_activity(source, window)
+            if scoped.empty:
+                continue
+            grouped = (
+                scoped.groupby("address")["fee_ustx"]
+                .sum()
+                .sort_values(ascending=False)
+                .reset_index()
+            )
+            candidates = grouped.head(top_n + next_cohort_size)["address"].tolist()
+            addresses.update(candidates)
+        return addresses
+
+    top_address_candidates = _collect_top_addresses(activity)
+
+    if fetch_top_activity and top_address_candidates:
+        pulse(0.25, "Fetching targeted history for top wallets")
+        wallet_metrics.ensure_address_transactions(
+            top_address_candidates,
+            max_days=max(windows),
+            force_refresh=force_refresh,
+            max_pages=max_pages_per_wallet,
+        )
+        pulse(0.3, "Reloading wallet activity with contract metadata")
+        activity = wallet_metrics.load_recent_wallet_activity(
+            max_days=max_days,
+            db_path=wallet_db_path,
+        )
+        as_of_ts = pd.to_datetime(activity["block_time"]).max().tz_convert("UTC")
+
+    pulse(0.4, "Computing Pareto cohorts")
+    pareto_windows = wallet_metrics.compute_fee_pareto_summary(activity, windows=windows, as_of=as_of_ts)
+    if not pareto_windows:
+        _write_html(
+            output_path,
+            "Wallet Breakdown",
+            ["<div class='section'><h1>Wallet Breakdown</h1><p>Unable to compute fee distribution for the requested windows.</p></div>"],
+            active_nav="breakdown",
+            last_updated=generated_at,
+            nav_prefix="../",
+        )
+        return
+
+    def _fmt_int(value: int | None) -> str:
+        if value is None:
+            return "—"
+        return f"{value:,}"
+
+    def _fmt_pct_fraction(value: float | None, *, decimals: int = 2) -> str:
+        if value is None:
+            return "—"
+        return f"{value * 100:.{decimals}f}%"
+
+    def _fmt_pct(value: float | None, *, decimals: int = 2) -> str:
+        if value is None:
+            return "—"
+        return f"{value:.{decimals}f}%"
+
+    def _fmt_stx(value: float | None, *, decimals: int = 2) -> str:
+        if value is None:
+            return "—"
+        return f"{value:,.{decimals}f}"
+
+    def _cut(res: wallet_metrics.FeeParetoWindow, target: float) -> dict[str, float] | None:
+        for cut in res.share_cutoffs:
+            if math.isclose(cut["fee_share"], target, rel_tol=1e-5, abs_tol=1e-5):
+                return cut
+        return None
+
+    def _top(res: wallet_metrics.FeeParetoWindow, pct: int) -> dict[str, float] | None:
+        for entry in res.top_percentiles:
+            if entry["wallet_pct"] == pct:
+                return entry
+        return None
+
+    summary_rows: list[dict[str, str | int]] = []
+    cutoff_rows: list[dict[str, str | int]] = []
+    top_rows: list[dict[str, str | int]] = []
+    cohort_rows: list[dict[str, str | int | float]] = []
+    percent_note = (
+        "<p class='note'>Wallet % columns are relative to wallets with non-zero fees in the same window. "
+        "Fee % columns are relative to total fees in the same window. Source: wallet_metrics.duckdb (Hiro canonical, successful tx only).</p>"
+    )
+
+    for res in pareto_windows:
+        cut_50 = _cut(res, 0.5)
+        cut_90 = _cut(res, 0.9)
+        top1 = _top(res, 1)
+        top5 = _top(res, 5)
+        summary_rows.append(
+            {
+                "Window (d)": res.window_days,
+                "Window start": res.window_start.strftime("%Y-%m-%d"),
+                "As of": res.as_of.strftime("%Y-%m-%d"),
+                "Wallets": _fmt_int(res.total_wallets),
+                "Total fees (STX)": _fmt_stx(res.total_fee_stx, decimals=2),
+                "Wallets →50% fees": _fmt_int(cut_50["wallets"] if cut_50 else None),
+                "% of wallets @50%": _fmt_pct_fraction(cut_50["wallet_pct"] if cut_50 else None),
+                "Wallets →90% fees": _fmt_int(cut_90["wallets"] if cut_90 else None),
+                "% of wallets @90%": _fmt_pct_fraction(cut_90["wallet_pct"] if cut_90 else None),
+                "Top 1% fee share": _fmt_pct(top1["fee_share"] * 100 if top1 else None, decimals=1),
+                "Top 5% fee share": _fmt_pct(top5["fee_share"] * 100 if top5 else None, decimals=1),
+            }
+        )
+        for cut in res.share_cutoffs:
+            cutoff_rows.append(
+                {
+                    "Window (d)": res.window_days,
+                    "Fee share": f"{int(cut['fee_share'] * 100)}%",
+                    "Wallets": _fmt_int(cut["wallets"]),
+                    "% of wallets": _fmt_pct_fraction(cut["wallet_pct"]),
+                    "Last wallet fee (STX)": _fmt_stx(cut["min_fee_stx"], decimals=3),
+                }
+            )
+        for entry in res.top_percentiles:
+            top_rows.append(
+                {
+                    "Window (d)": res.window_days,
+                    "Top wallets (%)": entry["wallet_pct"],
+                    "Wallets": _fmt_int(entry["wallets"]),
+                    "Fee share": _fmt_pct(entry["fee_share"] * 100, decimals=2),
+                    "Min fee (STX)": _fmt_stx(entry["min_fee_stx"], decimals=3),
+                    "Max fee (STX)": _fmt_stx(entry["max_fee_stx"], decimals=3),
+                }
+            )
+        for cohort_key, cohort_label in [
+            ("whales", "Whales (to 50% fees)"),
+            ("moderates", "Moderates (50-90%)"),
+            ("casual", "Casual (90%+ tail)"),
+        ]:
+            cohort = res.cohorts.get(cohort_key, {})
+            cohort_rows.append(
+                {
+                    "Window (d)": res.window_days,
+                    "Cohort": cohort_label,
+                    "Wallets": _fmt_int(int(cohort.get("wallets", 0))),
+                    "% of wallets": _fmt_pct_fraction(cohort.get("wallet_pct")),
+                    "Fee share": _fmt_pct(cohort.get("fee_share", 0.0) * 100, decimals=2),
+                    "Avg fee (STX)": _fmt_stx(cohort.get("avg_fee_stx"), decimals=3),
+                    "Median fee (STX)": _fmt_stx(cohort.get("median_fee_stx"), decimals=3),
+                    "Min fee (STX)": _fmt_stx(cohort.get("min_fee_stx"), decimals=3),
+                    "Max fee (STX)": _fmt_stx(cohort.get("max_fee_stx"), decimals=3),
+                }
+            )
+
+    summary_html = pd.DataFrame(summary_rows).sort_values("Window (d)").to_html(
+        index=False, classes="summary-table", escape=False
+    )
+    cutoffs_html = pd.DataFrame(cutoff_rows).sort_values(["Window (d)", "Fee share"]).to_html(
+        index=False, classes="summary-table", escape=False
+    )
+    top_df = pd.DataFrame(top_rows).sort_values(["Window (d)", "Top wallets (%)"])
+    top_df["Top wallets (%)"] = top_df["Top wallets (%)"].map(lambda v: f"{int(v)}%")
+    top_html = top_df.to_html(index=False, classes="summary-table", escape=False)
+    cohorts_html = pd.DataFrame(cohort_rows).sort_values(["Window (d)", "Cohort"]).to_html(
+        index=False, classes="summary-table", escape=False
+    )
+
+    def _address_link(addr: str) -> str:
+        short = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 12 else addr
+        href = f"https://explorer.hiro.so/address/{addr}?chain=mainnet"
+        return f"<a href='{href}' target='_blank' rel='noopener'>{short}</a>"
+
+    def _top_contract_for(addr: str, scoped: pd.DataFrame) -> str:
+        addr_slice = scoped[scoped["address"] == addr]
+        addr_contracts = (
+            addr_slice.dropna(subset=["contract_id"])
+            .groupby("contract_id")["tx_id"]
+            .count()
+            .sort_values(ascending=False)
+        )
+        if addr_contracts.empty:
+            return "—"
+        top_contract = addr_contracts.index[0]
+        return f"{top_contract} ({addr_contracts.iloc[0]} tx)"
+
+    def _top_wallet_tables(window: int) -> tuple[str, str]:
+        scoped = _window_activity(activity, window)
+        if scoped.empty:
+            return "", ""
+        wallet_fee = (
+            scoped.groupby("address")
+            .agg(
+                fee_ustx_sum=("fee_ustx", "sum"),
+                tx_count=("tx_id", "count"),
+                last_activity=("block_time", "max"),
+                contract_hits=("contract_id", "nunique"),
+            )
+            .reset_index()
+        )
+        wallet_fee["fee_stx"] = wallet_fee["fee_ustx_sum"] / wallet_metrics.MICROSTX_PER_STX
+        total_fee = wallet_fee["fee_stx"].sum()
+        wallet_fee["fee_share_pct"] = wallet_fee["fee_stx"] / total_fee * 100 if total_fee else 0.0
+        wallet_fee = wallet_fee.sort_values("fee_stx", ascending=False).reset_index(drop=True)
+        wallet_fee["rank"] = wallet_fee.index + 1
+        wallet_fee["top_contract"] = wallet_fee["address"].map(lambda addr: _top_contract_for(addr, scoped))
+        wallet_fee["last_activity"] = wallet_fee["last_activity"].dt.strftime("%Y-%m-%d")
+        wallet_fee["address_link"] = wallet_fee["address"].map(_address_link)
+        display_cols = [
+            "rank",
+            "address_link",
+            "fee_stx",
+            "fee_share_pct",
+            "tx_count",
+            "last_activity",
+            "contract_hits",
+            "top_contract",
+        ]
+        top_df_local = wallet_fee.iloc[:top_n][display_cols].rename(
+            columns={
+                "rank": "Rank",
+                "address_link": "Wallet",
+                "fee_stx": "Fees (STX)",
+                "fee_share_pct": "Fee %",
+                "tx_count": "Tx count",
+                "last_activity": "Last activity",
+                "contract_hits": "Distinct contracts",
+                "top_contract": "Top contract",
+            }
+        )
+        next_df_local = wallet_fee.iloc[top_n : top_n + next_cohort_size][display_cols].rename(
+            columns={
+                "rank": "Rank",
+                "address_link": "Wallet",
+                "fee_stx": "Fees (STX)",
+                "fee_share_pct": "Fee %",
+                "tx_count": "Tx count",
+                "last_activity": "Last activity",
+                "contract_hits": "Distinct contracts",
+                "top_contract": "Top contract",
+            }
+        )
+
+        for frame in (top_df_local, next_df_local):
+            if "Fees (STX)" in frame:
+                frame["Fees (STX)"] = frame["Fees (STX)"].map(lambda v: f"{v:,.3f}")
+            if "Fee %" in frame:
+                frame["Fee %"] = frame["Fee %"].map(lambda v: f"{v:.2f}%")
+
+        top_table = top_df_local.to_html(index=False, classes="summary-table", escape=False) if not top_df_local.empty else ""
+        next_table = next_df_local.to_html(index=False, classes="summary-table", escape=False) if not next_df_local.empty else ""
+        return top_table, next_table
+
+    top_wallet_sections: list[str] = []
+    for window in windows:
+        top_table, next_table = _top_wallet_tables(window)
+        if not top_table and not next_table:
+            continue
+        top_wallet_sections.append("<div class='section'>")
+        top_wallet_sections.append(
+            f"<details open><summary><strong>Top wallets (last {window}d)</strong></summary>"
+        )
+        if top_table:
+            top_wallet_sections.append(
+                "<p class='note'>Top wallets by fees with explorer links; fee % is share of window total.</p>"
+            )
+            top_wallet_sections.append(top_table)
+        if next_table:
+            top_wallet_sections.append(
+                "<p class='note'>Next cohort captures the extended tail; ranks shown in the table.</p>"
+            )
+            top_wallet_sections.append(next_table)
+        top_wallet_sections.append("</details>")
+        top_wallet_sections.append("</div>")
+    top_wallets_html = "\n".join(top_wallet_sections)
+
+    contract_summary_html = ""
+    contract_heatmap_html = ""
+    transfer_note_html = ""
+    transfer_tables_html: list[str] = []
+    if top_address_candidates:
+        max_window = max(windows)
+        contract_slice = _window_activity(activity, max_window)
+        contract_slice = contract_slice[contract_slice["address"].isin(top_address_candidates)]
+        contract_slice = contract_slice.dropna(subset=["contract_id"])
+        transfer_only = set(top_address_candidates) - set(contract_slice["address"])
+        if transfer_only:
+            transfer_note_html = (
+                f"<p class='note'>Transfer-only wallets (no contract metadata): {len(transfer_only)}. "
+                "Upstream Hiro endpoints may truncate large payloads; rerun targeted fetches when available.</p>"
+            )
+            # Build transfer-only table per window (fees, tx count, last activity, placeholder BNS)
+            for window in windows:
+                scoped = _window_activity(activity, window)
+                scoped = scoped[scoped["address"].isin(transfer_only)]
+                scoped = scoped[scoped["contract_id"].isna()]
+                if scoped.empty:
+                    continue
+                agg = (
+                    scoped.groupby("address")
+                    .agg(
+                        fee_ustx_sum=("fee_ustx", "sum"),
+                        tx_count=("tx_id", "count"),
+                        last_activity=("block_time", "max"),
+                        tx_types=("tx_type", lambda s: ", ".join(sorted(set(s.astype(str))))),
+                    )
+                    .reset_index()
+                )
+                total_fee = agg["fee_ustx_sum"].sum() / wallet_metrics.MICROSTX_PER_STX
+                agg["fee_stx"] = agg["fee_ustx_sum"] / wallet_metrics.MICROSTX_PER_STX
+                agg = agg.sort_values("fee_stx", ascending=False).reset_index(drop=True)
+                agg["rank"] = agg.index + 1
+                agg["last_activity"] = agg["last_activity"].dt.strftime("%Y-%m-%d")
+                agg["Wallet"] = agg["address"].map(_address_link)
+                agg["Fee %"] = agg["fee_stx"] / total_fee * 100 if total_fee else 0.0
+                agg["Fees (STX)"] = agg["fee_stx"].map(lambda v: f"{v:,.3f}")
+                agg["Fee %"] = agg["Fee %"].map(lambda v: f"{v:.2f}%")
+                agg["Tx count"] = agg["tx_count"].map(int)
+                agg["Last activity"] = agg["last_activity"]
+                agg["Tx types"] = agg["tx_types"]
+                agg["BNSv2 names"] = "—"
+                table = agg[
+                    ["rank", "Wallet", "Fees (STX)", "Fee %", "Tx count", "Last activity", "Tx types", "BNSv2 names"]
+                ].rename(columns={"rank": "Rank"})
+                transfer_tables_html.append(
+                    "<div class='section'>"
+                    f"<h3>Transfer-only wallets (last {window}d)</h3>"
+                    "<p class='note'>No contract calls observed; fee % is share of transfer-only fees in this window. "
+                    "BNSv2 lookup not available in current dataset.</p>"
+                    + table.to_html(index=False, classes="summary-table", escape=False)
+                    + "</div>"
+                )
+        if not contract_slice.empty:
+            contract_group = (
+                contract_slice.groupby(["contract_id", "contract_call_function"])
+                .agg(
+                    tx_count=("tx_id", "count"),
+                    wallets=("address", "nunique"),
+                    fee_ustx_sum=("fee_ustx", "sum"),
+                )
+                .reset_index()
+            )
+            contract_group["fee_stx"] = contract_group["fee_ustx_sum"] / wallet_metrics.MICROSTX_PER_STX
+            contract_group["tag"] = contract_group["contract_id"].map(
+                lambda cid: CONTRACT_TAGS.get(cid, CONTRACT_TAG_FALLBACK)
+            )
+            contract_group = contract_group.sort_values("fee_stx", ascending=False).head(50)
+            top_contracts_heat = (
+                contract_group.sort_values("fee_stx", ascending=False)
+                .head(heatmap_contracts)["contract_id"]
+                .tolist()
+            )
+            contract_group = contract_group.rename(
+                columns={
+                    "contract_id": "Contract",
+                    "contract_call_function": "Function",
+                    "tx_count": "Tx count",
+                    "wallets": "Wallets",
+                    "fee_stx": "Fees (STX)",
+                    "tag": "Tag",
+                }
+            )
+            contract_group["Fees (STX)"] = contract_group["Fees (STX)"].map(lambda v: f"{v:,.3f}")
+            contract_summary_html = contract_group.to_html(index=False, classes="summary-table", escape=False)
+
+            top_wallets_heat = (
+                contract_slice.groupby(["address"])["fee_ustx"]
+                .sum()
+                .nlargest(heatmap_wallets)
+                .reset_index()["address"]
+            )
+            heat_slice = contract_slice[
+                contract_slice["address"].isin(top_wallets_heat)
+                & contract_slice["contract_id"].isin(top_contracts_heat)
+            ]
+            if not heat_slice.empty:
+                pivot = (
+                    heat_slice.groupby(["address", "contract_id"])["fee_ustx"]
+                    .sum()
+                    .unstack(fill_value=0)
+                    / wallet_metrics.MICROSTX_PER_STX
+                )
+                pivot = pivot.loc[top_wallets_heat, top_contracts_heat]
+                fig_heat = px.imshow(
+                    pivot,
+                    labels=dict(x="Contract", y="Wallet", color="Fees (STX)"),
+                    aspect="auto",
+                    color_continuous_scale="Blues",
+                )
+                fig_heat.update_layout(
+                    title=f"Top {len(top_wallets_heat)} wallets × Top {len(top_contracts_heat)} contracts (fees, STX)",
+                    height=420,
+                    margin=dict(l=80, r=20, t=80, b=50),
+                )
+                fig_heat.update_yaxes(tickfont=dict(size=10))
+                fig_heat.update_xaxes(tickangle=45, tickfont=dict(size=10))
+                contract_heatmap_html = pio.to_html(fig_heat, include_plotlyjs="cdn", full_html=False)
+
+    lorenz_fig = go.Figure()
+    for res in pareto_windows:
+        curve = res.lorenz_curve.copy()
+        lorenz_fig.add_scatter(
+            x=curve["wallet_pct"] * 100,
+            y=curve["cum_fee_share"] * 100,
+            mode="lines",
+            name=f"{res.window_days}d",
+            hovertemplate="<b>Wallet percentile:</b> %{x:.2f}%<br>"
+            "<b>Cumulative fee share:</b> %{y:.2f}%<extra></extra>",
+        )
+    lorenz_fig.add_scatter(
+        x=[0, 100],
+        y=[0, 100],
+        mode="lines",
+        line=dict(color="#737373", dash="dash"),
+        name="Even distribution",
+        hoverinfo="skip",
+        showlegend=True,
+    )
+    lorenz_fig.update_layout(
+        title="Cumulative fee share by wallet percentile",
+        xaxis_title="Wallet percentile (%)",
+        yaxis_title="Cumulative fee share (%)",
+        template="plotly_dark",
+        height=520,
+        legend=dict(orientation="h", y=-0.2),
+    )
+    lorenz_html = pio.to_html(lorenz_fig, include_plotlyjs="cdn", full_html=False)
+
+    sections: list[str] = [
+        "<div class='section'>",
+        "<h1>Wallet Breakdown</h1>",
+        "<p class='note'>Pareto breakdown of canonical, successful transactions cached in wallet_metrics. "
+        f"Trailing windows: {', '.join(str(w) + 'd' for w in windows)}. Anchored to last observed block {as_of_ts:%Y-%m-%d %H:%M UTC}. "
+        f"Build stamp: {generated_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>",
+        "<div class='definitions'><strong>Definitions:</strong> wallets are sorted by STX fees in each window. "
+        "Whales are the smallest set needed to reach the first 50% of fees; moderates cover the next 40% "
+        "until 90%; casual captures the remaining 10% tail. Wallet % columns are relative to wallets with non-zero fees in the same window. "
+        "Fee % columns are relative to total fees in the same window. Source: wallet_metrics.duckdb (Hiro canonical, success only).</div>",
+        "</div>",
+        "<div class='section'>",
+        "<h2>Window snapshot</h2>",
+        percent_note,
+        summary_html,
+        "</div>",
+        "<div class='section'>",
+        "<h2>Pareto cutoffs</h2>",
+        "<p class='note'>Wallet counts required to reach each fee share threshold; wallet% is relative to all wallets with non-zero fees in the window.</p>",
+        cutoffs_html,
+        "</div>",
+        "<div class='section'>",
+        "<h2>Top percentiles</h2>",
+        "<p class='note'>Fee concentration for top wallet buckets by count. Min/Max fee columns show the floor and ceiling inside each slice.</p>",
+        top_html,
+        "</div>",
+        "<div class='section'>",
+        "<h2>Whale / moderate / casual buckets</h2>",
+        cohorts_html,
+        "</div>",
+        "<div class='section'>",
+        lorenz_html,
+        "</div>",
+    ]
+
+    if top_wallets_html:
+        sections.append(
+            "<p class='note'>Explorer links point to Hiro explorer. Copy addresses directly from the table when triaging.</p>"
+        )
+        sections.append(top_wallets_html)
+
+    if contract_summary_html:
+        sections.extend(
+            [
+                "<div class='section'>",
+                "<h2>Contract interaction mix (top wallets, longest window)</h2>",
+                "<p class='note'>Tags are manual and live in CONTRACT_TAGS in scripts/build_dashboards.py — review periodically.</p>",
+                contract_summary_html,
+                "</div>",
+            ]
+        )
+    if transfer_note_html:
+        sections.append(transfer_note_html)
+    if transfer_tables_html:
+        sections.extend(transfer_tables_html)
+
+    if contract_heatmap_html:
+        sections.extend(
+            [
+                "<details>",
+                "<summary><strong>Compact contract heatmap (fees, collapsible)</strong></summary>",
+                contract_heatmap_html,
+                "</details>",
+            ]
+        )
+
+    _write_html(
+        output_path,
+        "Wallet Breakdown",
+        sections,
+        active_nav="breakdown",
+        last_updated=generated_at,
+        nav_prefix="../",
+    )
 
 
 # NOTE: Retention visualization mock-up. Not linked in production nav; keep for future experiments.
@@ -2858,7 +3207,7 @@ def copy_static_assets(public_dir: Path) -> None:
             "dest": public_dir / "coinbase" / "index.html",
             "title": "Coinbase Fee Calculator",
             "active_nav": "coinbase",
-            "style": COINBASE_CALC_STYLE,
+            "style": dashboard_styles.COINBASE_CALC_STYLE,
             "wrapper": "coinbase-wrapper",
         },
         {
@@ -2866,7 +3215,7 @@ def copy_static_assets(public_dir: Path) -> None:
             "dest": public_dir / "coinbase_replacement" / "index.html",
             "title": "Coinbase Replacement Roadmap",
             "active_nav": "coinbase_replacement",
-            "style": PLOTLY_EMBED_STYLE,
+            "style": dashboard_styles.PLOTLY_EMBED_STYLE,
             "wrapper": "plotly-embed",
         },
         {
@@ -2874,7 +3223,7 @@ def copy_static_assets(public_dir: Path) -> None:
             "dest": public_dir / "scenarios" / "index.html",
             "title": "Scenario Sensitivity Dashboard",
             "active_nav": "scenarios",
-            "style": PLOTLY_EMBED_STYLE,
+            "style": dashboard_styles.PLOTLY_EMBED_STYLE,
             "wrapper": "plotly-embed",
         },
     ]
@@ -2902,84 +3251,70 @@ def build_public_index(public_dir: Path) -> None:
     public_dir.mkdir(parents=True, exist_ok=True)
     index_path = public_dir / "index.html"
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    nav_links = "\n".join(
+
+    nav_links_html = "\n".join(
         f'        <a data-key="{key}" data-href="{href}" href="{href}">{label}</a>'
         for key, label, href in NAV_LINKS
     )
     default_href = NAV_LINKS[0][2]
     default_key = DEFAULT_NAV_KEY
-    template = Template(
-        """<!DOCTYPE html>
+
+    html_content = f"""<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Stacks Analytics</title>
     <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #101522; color: #f5f6fa; margin: 0; min-height: 100vh; display: flex; }
-      .sidebar { width: 240px; background: #0f1420; border-right: 1px solid #2f354a; padding: 1.25rem; position: sticky; top: 0; height: 100vh; box-sizing: border-box; }
-      .sidebar h2 { color: #70e1ff; margin-top: 0; font-size: 1.1rem; }
-      .nav a { display: block; padding: 0.5rem 0.4rem; color: #b5bfd9; text-decoration: none; border-radius: 4px; }
-      .nav a:hover, .nav a.active { color: #70e1ff; background: #1a2034; }
-      .content { flex: 1; display: flex; flex-direction: column; }
-      .topbar { padding: 1rem 1.5rem; border-bottom: 1px solid #2f354a; }
-      .topbar p { margin: 0; color: #b5bfd9; }
-      iframe { flex: 1; border: none; width: 100%; background: #0f1420; }
-      footer { padding: 0.75rem 1.5rem; font-size: 0.85rem; color: #7681a1; border-top: 1px solid #2f354a; }
-      .open-link { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: #70e1ff; text-decoration: none; }
+{dashboard_styles.CSS_VARIABLES}
+{dashboard_styles.INDEX_STYLE}
     </style>
   </head>
   <body>
     <aside class="sidebar">
       <h2>Stacks Analytics</h2>
       <nav class="nav">
-$nav_links
+{nav_links_html}
       </nav>
     </aside>
     <div class="content">
       <div class="topbar">
-        <p>Use the sidebar to switch dashboards or <a class="open-link" id="open-new" href="$default_href" target="_blank" rel="noreferrer">open current in new tab ↗</a></p>
+        <p>Use the sidebar to switch dashboards or <a class="open-link" id="open-new" href="{default_href}" target="_blank" rel="noreferrer">open current in new tab ↗</a></p>
       </div>
-      <iframe id="dash-frame" src="$default_href" title="Stacks Analytics Dashboard"></iframe>
-      <footer>Generated $stamp</footer>
+      <iframe id="dash-frame" src="{default_href}" title="Stacks Analytics Dashboard"></iframe>
+      <footer>Generated {stamp}</footer>
     </div>
     <script>
       const links = Array.from(document.querySelectorAll('.nav a'));
       const frame = document.getElementById('dash-frame');
       const openLink = document.getElementById('open-new');
-      function activate(key, href, push = true) {
+
+      function activate(key, href, push = true) {{
         links.forEach((link) => link.classList.toggle('active', link.dataset.key === key));
-        if (frame.getAttribute('src') !== href) {
+        if (frame.getAttribute('src') !== href) {{
           frame.setAttribute('src', href);
-        }
+        }}
         openLink.setAttribute('href', href);
-        if (push) {
+        if (push) {{
           history.replaceState(null, '', '#' + key);
-        }
-      }
-      links.forEach((link) => {
-        link.addEventListener('click', (event) => {
+        }}
+      }}
+
+      links.forEach((link) => {{
+        link.addEventListener('click', (event) => {{
           event.preventDefault();
           activate(link.dataset.key, link.dataset.href);
-        });
-      });
-      const initialKey = window.location.hash ? window.location.hash.slice(1) : '$default_key';
+        }});
+      }});
+
+      const initialKey = window.location.hash ? window.location.hash.slice(1) : '{default_key}';
       const initialLink = links.find((link) => link.dataset.key === initialKey) || links[0];
       activate(initialLink.dataset.key, initialLink.dataset.href, false);
     </script>
   </body>
 </html>
 """
-    )
-    index_path.write_text(
-        template.substitute(
-            stamp=stamp,
-            nav_links=nav_links,
-            default_href=default_href,
-            default_key=default_key,
-        ),
-        encoding="utf-8",
-    )
+    index_path.write_text(html_content, encoding="utf-8")
     print(f"Wrote {index_path}")
 
 
@@ -3112,7 +3447,7 @@ def build_value_dashboard(
     # Add classification definitions for clarity at the top of the page.
     thr = wallet_value.ClassificationThresholds()
     sections.append(
-        "<div class='note'>"
+        "<div class='definitions'>"
         "<strong>Definitions:</strong> "
         f"Funded Wallet: current STX balance ≥ {thr.funded_stx_min:g} STX. "
         f"Active Wallet: ≥ {thr.active_min_tx_30d} tx in the first 30 days from activation. "
@@ -3845,9 +4180,9 @@ def main() -> None:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("out/dashboards"),
-        help="Directory to write standalone dashboard HTML files.",
-    )
+    default=Path("out/dashboards"),
+    help="Directory to write standalone dashboard HTML files.",
+)
     parser.add_argument(
         "--public-dir",
         type=Path,
@@ -3923,6 +4258,36 @@ def main() -> None:
         help="Skip other dashboards and only build the retention visualization playground.",
     )
     parser.add_argument(
+        "--breakdown-windows",
+        type=int,
+        nargs="+",
+        default=[30, 90],
+        help="Trailing windows (days) for wallet fee Pareto breakdown.",
+    )
+    parser.add_argument(
+        "--breakdown-top-n",
+        type=int,
+        default=20,
+        help="Number of top wallets to display in the breakdown page.",
+    )
+    parser.add_argument(
+        "--breakdown-next-size",
+        type=int,
+        default=80,
+        help="Number of wallets in the follow-on cohort after the top group.",
+    )
+    parser.add_argument(
+        "--breakdown-max-pages",
+        type=int,
+        default=80,
+        help="Max pages per address when fetching targeted transactions for top wallets (50 tx per page).",
+    )
+    parser.add_argument(
+        "--skip-breakdown-fetch",
+        action="store_true",
+        help="Skip targeted fetch of top-wallet transactions (uses existing cache only).",
+    )
+    parser.add_argument(
         "--no-dashboard-cache",
         action="store_true",
         help="Bypass the precomputed dashboard cache and recompute everything from scratch.",
@@ -3931,6 +4296,7 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     wallet_html = args.out_dir / "wallet_dashboard.html"
+    breakdown_html = args.out_dir / "wallet_breakdown.html"
     macro_html = args.out_dir / "macro_dashboard.html"
     value_html = args.out_dir / "wallet_value_dashboard.html"
     roi_html = args.out_dir / "roi_dashboard.html"
@@ -3965,6 +4331,9 @@ def main() -> None:
     build_wallet = (
         not args.value_only and not args.one_pager_only and not args.retention_demo_only
     )
+    build_breakdown = (
+        not args.value_only and not args.one_pager_only and not args.retention_demo_only
+    )
     build_macro = (
         not args.value_only and not args.one_pager_only and not args.retention_demo_only
     )
@@ -3975,6 +4344,8 @@ def main() -> None:
     stage_plan: list[tuple[str, str]] = [("prepare", "Preparing wallet DB snapshot and prices")]
     if build_wallet:
         stage_plan.append(("wallet", "Building wallet dashboard"))
+    if build_breakdown:
+        stage_plan.append(("breakdown", "Building wallet breakdown"))
     if build_value:
         stage_plan.append(("value", "Building wallet value dashboard"))
     if build_macro:
@@ -3983,7 +4354,7 @@ def main() -> None:
         stage_plan.append(("roi", "Building ROI dashboard"))
     if build_retention_demo:
         stage_plan.append(("retention", "Building retention playground"))
-    publish_needed = any([build_wallet, build_value, build_macro, build_roi, build_retention_demo])
+    publish_needed = any([build_wallet, build_breakdown, build_value, build_macro, build_roi, build_retention_demo])
     if publish_needed:
         stage_plan.append(("publish", "Copying dashboards to public/"))
     if args.wallet_db_snapshot:
@@ -4041,6 +4412,7 @@ def main() -> None:
         _finish_stage("prepare", "Input snapshot ready")
 
         built_wallet = False
+        built_breakdown = False
         built_macro = False
         built_value = False
         built_roi = False
@@ -4086,6 +4458,30 @@ def main() -> None:
             )
             built_wallet = True
             _finish_stage("wallet", "Wallet dashboard complete")
+
+        if build_breakdown:
+            def breakdown_stage_progress(fraction: float, detail: str) -> None:
+                _stage_progress("breakdown", fraction, detail)
+
+            _start_stage("breakdown", "Building wallet fee breakdown")
+            build_wallet_breakdown_dashboard(
+                output_path=breakdown_html,
+                max_days=args.wallet_max_days,
+                windows=args.breakdown_windows,
+                force_refresh=args.force_refresh,
+                wallet_db_path=wallet_db_path,
+                skip_history_sync=skip_history_sync,
+                metrics_bundle=wallet_bundle_arg,
+                fetch_top_activity=not args.skip_breakdown_fetch,
+                top_n=args.breakdown_top_n,
+                next_cohort_size=args.breakdown_next_size,
+                max_pages_per_wallet=args.breakdown_max_pages,
+                heatmap_wallets=50,
+                heatmap_contracts=15,
+                progress_callback=breakdown_stage_progress,
+            )
+            built_breakdown = True
+            _finish_stage("breakdown", "Wallet breakdown complete")
 
         if build_value:
             def value_stage_progress(fraction: float, detail: str) -> None:
@@ -4164,6 +4560,12 @@ def main() -> None:
             wallet_public.parent.mkdir(parents=True, exist_ok=True)
             wallet_public.write_text(wallet_html.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"Copied {wallet_html} -> {wallet_public}")
+
+        if built_breakdown:
+            breakdown_public = args.public_dir / "breakdown" / "index.html"
+            breakdown_public.parent.mkdir(parents=True, exist_ok=True)
+            breakdown_public.write_text(breakdown_html.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"Copied {breakdown_html} -> {breakdown_public}")
 
         if built_macro:
             macro_public = args.public_dir / "macro" / "index.html"

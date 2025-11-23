@@ -62,6 +62,8 @@
 - Commit extremely frequently (small, reviewable diffs) so we can rewind quickly if needed; treat every meaningful step as a checkpoint.
 - Keep commits narrow; data artifacts only when reproducible.
 - Track work in beads CLI. `bd ready` before picking tasks; update status when delivering.
+- Beads setup: run `bd init` in each worktree (local .beads DB). Use `bd create "<title>" -d "<desc>"` to open issues and `bd ready` / `bd status` to triage. Keep `.beads/` out of git unless explicitly requested.
+- Active bead for BNS lookup: `stx-labs-ha1` (“Add BNS names to breakdown”).
 - **Worktrees:** see “Git Worktree Management” below. Critical: `.env` and caches are not shared; run `./scripts/sync_env.sh` after creating or before merging.
 - Prefer feature branches per bead (`git checkout -b feat/value-dashboard-aug`). Push early/often.
 

@@ -28,6 +28,9 @@ POX_CYCLES_ENDPOINT = f"{HIRO_BASE}/extended/v2/pox/cycles"
 TX_BY_BLOCK_HEIGHT_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx/block_height"
 TRANSACTION_HISTORY_ENDPOINT = f"{HIRO_BASE}/extended/v1/tx"
 ADDRESS_BALANCES_ENDPOINT = f"{HIRO_BASE}/extended/v1/address"
+ADDRESS_NAMES_ENDPOINT = f"{HIRO_BASE}/v1/addresses"
+ADDRESS_NAMES_ENDPOINT = f"{HIRO_BASE}/v1/addresses"
+ADDRESS_TRANSACTIONS_ENDPOINT = f"{HIRO_BASE}/extended/v1/address"
 
 HIRO_CACHE_DIR = cfg.CACHE_DIR / "hiro"
 HIRO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,6 +95,34 @@ def fetch_transactions_page(
         )
     )
 
+
+def fetch_address_transactions(
+    address: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    include_unanchored: bool = False,
+    force_refresh: bool = False,
+    ttl_seconds: int = 900,
+) -> Dict[str, Any]:
+    """Fetch a page of transactions for a specific address."""
+    params: Dict[str, Any] = {
+        "limit": min(limit, 50),
+        "offset": offset,
+        "unanchored": str(include_unanchored).lower(),
+        "order": "desc",
+    }
+    return cached_json_request(
+        RequestOptions(
+            prefix=f"hiro_address_transactions_{address}",
+            session=_hiro_session(),
+            method="GET",
+            url=f"{ADDRESS_TRANSACTIONS_ENDPOINT}/{address}/transactions",
+            params=params,
+            ttl_seconds=ttl_seconds,
+            force_refresh=force_refresh,
+        )
+    )
 
 def fetch_burnchain_rewards(
     *,
@@ -403,6 +434,23 @@ def fetch_address_balances(
     return cached_json_request(
         RequestOptions(
             prefix="hiro_address_balances",
+            session=_hiro_session(),
+            method="GET",
+            url=url,
+            ttl_seconds=ttl_seconds,
+            force_refresh=force_refresh,
+        )
+    )
+
+
+def fetch_address_names(
+    address: str, *, force_refresh: bool = False, ttl_seconds: int = 6 * 3600
+) -> Dict[str, Any]:
+    """Fetch BNS/BNSv2 names for a principal (cached)."""
+    url = f"{ADDRESS_NAMES_ENDPOINT}/{address}/names"
+    return cached_json_request(
+        RequestOptions(
+            prefix="hiro_address_names",
             session=_hiro_session(),
             method="GET",
             url=url,
