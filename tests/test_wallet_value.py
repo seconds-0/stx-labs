@@ -163,7 +163,8 @@ def test_classification_funded_by_sbtc_total_received_lookup():
 
 def test_classification_loads_sbtc_from_db(monkeypatch, tmp_path):
     """With no injected lookup, classify_wallets reads sBTC from wallet_balances."""
-    from datetime import UTC, date, datetime
+    from datetime import date
+
     from src import wallet_metrics
 
     db_path = tmp_path / "wallets.duckdb"
@@ -180,13 +181,21 @@ def test_classification_loads_sbtc_from_db(monkeypatch, tmp_path):
         "A": {
             "stx": {"balance": "0"},
             "fungible_tokens": {
-                asset_id: {"balance": "0", "total_received": "250000", "total_sent": "0"}
+                asset_id: {
+                    "balance": "0",
+                    "total_received": "250000",
+                    "total_sent": "0",
+                }
             },
         },
         "B": {
             "stx": {"balance": "0"},
             "fungible_tokens": {
-                asset_id: {"balance": "0", "total_received": "50000", "total_sent": "0"}
+                asset_id: {
+                    "balance": "0",
+                    "total_received": "50000",
+                    "total_sent": "0",
+                }
             },
         },
     }

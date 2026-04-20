@@ -89,14 +89,16 @@ def main() -> int:
             next_cursor = _page_cursor(results)
             if next_cursor is None or next_cursor >= cursor:
                 print(
-                    f"[page {pages}] cursor stalled ({next_cursor} >= {cursor}), stopping.",
+                    f"[page {pages}] cursor stalled "
+                    f"({next_cursor} >= {cursor}), stopping.",
                     flush=True,
                 )
                 break
 
             if next_cursor <= target_ts:
+                reached = datetime.fromtimestamp(next_cursor, UTC).isoformat()
                 print(
-                    f"[page {pages}] reached target ({datetime.fromtimestamp(next_cursor, UTC).isoformat()} <= target), stopping.",
+                    f"[page {pages}] reached target ({reached} <= target), stopping.",
                     flush=True,
                 )
                 break
@@ -109,7 +111,8 @@ def main() -> int:
                 elapsed = now - started
                 rate = pages / elapsed if elapsed > 0 else 0
                 print(
-                    f"[page {pages}] cursor={cursor_dt.isoformat()} inserted_total={inserted_total} "
+                    f"[page {pages}] cursor={cursor_dt.isoformat()} "
+                    f"inserted_total={inserted_total} "
                     f"elapsed={elapsed:.0f}s rate={rate:.1f} pg/s",
                     flush=True,
                 )
