@@ -13,7 +13,7 @@ This document captures the plan, implementation, and runbook for modeling the ec
 - NV (Network Value): Σ(fee_stx × STX/BTC_at_tx_time)
 - WALTV: NV + derived activity value − incentives (v1: derived/incentives = 0)
 - Classes (initial thresholds)
-  - Funded Wallet: current `STX balance ≥ 10` (sBTC mint ≥ 0.001 BTC planned)
+  - Funded Wallet: current `STX balance ≥ 10` (or cumulative sBTC received ≥ 0.001 BTC when `SBTC_ASSET_IDENTIFIERS` is configured)
   - Active Wallet: `≥ 3 tx in first 30 days` from activation
   - Value Wallet: `WALTV-30 ≥ 1 STX in fees`
 

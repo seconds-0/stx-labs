@@ -102,7 +102,10 @@ def test_classification_with_balance_lookup():
         activity, first_seen, prices, windows=(30,)
     )
     thresholds = wallet_value.ClassificationThresholds(
-        funded_stx_min=10.0, active_min_tx_30d=3, value_min_fee_stx_30d=1.0
+        funded_stx_min=10.0,
+        funded_sbtc_min_btc=0.0,
+        active_min_tx_30d=3,
+        value_min_fee_stx_30d=1.0,
     )
 
     # Inject balances: A is funded (20 STX), B not funded (0.5 STX)
@@ -127,6 +130,37 @@ def test_classification_with_balance_lookup():
     assert bool(b.value_30d) is False
 
 
+def test_classification_funded_by_sbtc_total_received_lookup():
+    activity = _activity_fixture()
+    first_seen = _first_seen_fixture()
+    prices = _price_panel_fixture()
+    windows = wallet_value.compute_wallet_windows(
+        activity, first_seen, prices, windows=(30,)
+    )
+    thresholds = wallet_value.ClassificationThresholds(
+        funded_stx_min=10.0,
+        funded_sbtc_min_btc=0.001,
+        active_min_tx_30d=3,
+        value_min_fee_stx_30d=1.0,
+    )
+
+    balance_map = {"A": 0.0, "B": 0.0}
+    sbtc_received_map = {"A": 0.002, "B": 0.0005}
+    classified = wallet_value.classify_wallets(
+        first_seen=first_seen,
+        activity=activity,
+        windows_agg=windows,
+        thresholds=thresholds,
+        balance_lookup=balance_map,
+        sbtc_total_received_lookup=sbtc_received_map,
+    )
+
+    a = classified[classified["address"] == "A"].iloc[0]
+    b = classified[classified["address"] == "B"].iloc[0]
+    assert bool(a.funded) is True
+    assert bool(b.funded) is False
+
+
 def test_compute_network_daily_and_kpis():
     activity = _activity_fixture()
     activity["fee_stx"] = activity["fee_ustx"] / wallet_value.MICROSTX_PER_STX
@@ -144,7 +178,7 @@ def test_compute_network_daily_and_kpis():
         first_seen=first_seen,
         activity=activity,
         windows_agg=windows,
-        thresholds=wallet_value.ClassificationThresholds(),
+        thresholds=wallet_value.ClassificationThresholds(funded_sbtc_min_btc=0.0),
         balance_lookup={"A": 20.0, "B": 0.5},
     )
     kpis = wallet_value.summarize_value_kpis(

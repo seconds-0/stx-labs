@@ -24,10 +24,12 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from . import config as cfg
 from . import prices
 from . import wallet_metrics
 
 MICROSTX_PER_STX = 1_000_000
+SATOSHIS_PER_BTC = 100_000_000
 MIN_WALTV_COHORT = 3  # Minimum wallets required for ROI panels
 
 
@@ -36,11 +38,13 @@ class ClassificationThresholds:
     """Thresholds for funnel classification.
 
     - funded_stx_min: wallet STX balance threshold to be considered funded.
+    - funded_sbtc_min_btc: cumulative sBTC received threshold (BTC units).
     - active_min_tx_30d: minimum tx count within 30 days from activation.
     - value_min_fee_stx_30d: minimum fees (STX) within 30 days to be a value wallet.
     """
 
     funded_stx_min: float = 10.0
+    funded_sbtc_min_btc: float = 0.001
     active_min_tx_30d: int = 3
     value_min_fee_stx_30d: float = 1.0
 
@@ -355,6 +359,8 @@ def classify_wallets(
     windows_agg: pd.DataFrame,
     thresholds: ClassificationThresholds = ClassificationThresholds(),
     balance_lookup: Mapping[str, float] | None = None,
+    sbtc_total_received_lookup: Mapping[str, float] | None = None,
+    sbtc_asset_identifiers: Sequence[str] | None = None,
     wallet_db_path: Path | None = None,
 ) -> pd.DataFrame:
     """Classify wallets into funded/active/value using the provided thresholds.
@@ -362,6 +368,12 @@ def classify_wallets(
     balance_lookup allows injecting known balances in STX for testing; when not
     provided, balances are loaded from the persisted wallet_balances table with a
     fallback to live Hiro API fetches for any missing addresses.
+
+    sbtc_total_received_lookup allows injecting cumulative sBTC received values
+    (in BTC units) for testing. When not provided and sBTC asset identifiers are
+    configured, we fetch balances from Hiro and treat wallets as funded when
+    total sBTC received >= funded_sbtc_min_btc. Asset identifiers can be passed
+    explicitly via sbtc_asset_identifiers or configured via SBTC_ASSET_IDENTIFIERS.
     """
     if first_seen.empty:
         return pd.DataFrame(
@@ -411,6 +423,52 @@ def classify_wallets(
                         balance_ustx >= threshold_ustx
                     )
 
+    # Determine funded via sBTC cumulative receipts for wallets not already funded by STX.
+    sbtc_funded_map: dict[str, bool] = {}
+    if thresholds.funded_sbtc_min_btc > 0:
+        sbtc_threshold_sats = int(
+            thresholds.funded_sbtc_min_btc * SATOSHIS_PER_BTC
+        )
+        if sbtc_total_received_lookup is not None:
+            for addr, total_received_btc in sbtc_total_received_lookup.items():
+                try:
+                    total_received_sats = int(
+                        float(total_received_btc) * SATOSHIS_PER_BTC
+                    )
+                except (TypeError, ValueError):
+                    total_received_sats = 0
+                sbtc_funded_map[str(addr)] = bool(
+                    total_received_sats >= sbtc_threshold_sats
+                )
+        else:
+            asset_ids = (
+                list(sbtc_asset_identifiers)
+                if sbtc_asset_identifiers is not None
+                else list(cfg.SBTC_ASSET_IDENTIFIERS)
+            )
+            if asset_ids:
+                candidates = [
+                    addr for addr in addresses if not funded_map.get(addr, False)
+                ]
+                for addr in candidates:
+                    try:
+                        payload = wallet_metrics.fetch_address_balances(addr)
+                    except Exception:
+                        payload = None
+                    total_received_sats = 0
+                    if payload:
+                        for asset_id in asset_ids:
+                            amounts = wallet_metrics._extract_fungible_token_amounts(
+                                payload, asset_id
+                            )
+                            if amounts:
+                                total_received_sats += amounts.get(
+                                    "total_received", 0
+                                )
+                    sbtc_funded_map[addr] = bool(
+                        total_received_sats >= sbtc_threshold_sats
+                    )
+
     # Active in 30d: tx_count >= threshold in window 30
     w30 = (
         windows_agg[windows_agg["window_days"] == 30]
@@ -431,7 +489,9 @@ def classify_wallets(
             {
                 "address": addr,
                 "activation_date": row.activation_date,
-                "funded": bool(funded_map.get(addr, False)),
+                "funded": bool(
+                    funded_map.get(addr, False) or sbtc_funded_map.get(addr, False)
+                ),
                 "active_30d": bool(
                     tx_count_map.get(addr, 0) >= thresholds.active_min_tx_30d
                 ),

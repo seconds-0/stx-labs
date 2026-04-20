@@ -27,6 +27,13 @@ COINGECKO_BASE = os.getenv("COINGECKO_BASE", "https://api.coingecko.com/api/v3")
 HIRO_API_KEY_ENV = "HIRO_API_KEY"
 COINGECKO_API_KEY = os.getenv("COIN_GECKO_KEY")
 
+SBTC_ASSET_IDENTIFIERS_ENV = "SBTC_ASSET_IDENTIFIERS"
+SBTC_ASSET_IDENTIFIERS = tuple(
+    s.strip()
+    for s in os.getenv(SBTC_ASSET_IDENTIFIERS_ENV, "").split(",")
+    if s.strip()
+)
+
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)

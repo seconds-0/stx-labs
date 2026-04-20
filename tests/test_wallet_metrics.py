@@ -17,6 +17,25 @@ def patch_now(monkeypatch):
     return fixed_now
 
 
+def test_extract_fungible_token_amounts_handles_strings():
+    payload = {
+        "fungible_tokens": {
+            "X.sbtc::sBTC": {
+                "balance": "10",
+                "total_received": "25",
+                "total_sent": "15",
+            }
+        }
+    }
+    amounts = wallet_metrics._extract_fungible_token_amounts(
+        payload, "X.sbtc::sBTC"
+    )
+    assert amounts == {"balance": 10, "total_received": 25, "total_sent": 15}
+    assert (
+        wallet_metrics._extract_fungible_token_amounts(payload, "missing") is None
+    )
+
+
 def test_load_recent_wallet_activity_filters_transactions(monkeypatch, tmp_path):
     base_time = datetime(2025, 4, 1, 12, 0, tzinfo=UTC)
     cutoff_time = int((base_time - timedelta(days=8)).timestamp())

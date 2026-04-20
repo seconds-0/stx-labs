@@ -229,6 +229,40 @@ def _extract_stx_balance(payload: dict[str, Any] | None) -> int:
         return 0
 
 
+def _extract_fungible_token_amounts(
+    payload: Mapping[str, Any] | None, asset_identifier: str
+) -> dict[str, int] | None:
+    """Extract fungible token amounts for a given asset identifier.
+
+    Returns a dict with integer fields:
+      - balance
+      - total_received
+      - total_sent
+
+    Amounts are expressed in the token's base units (e.g., sats for sBTC).
+    """
+    if not payload or not isinstance(payload, Mapping):
+        return None
+    fungible_tokens = payload.get("fungible_tokens")
+    if not isinstance(fungible_tokens, Mapping):
+        return None
+    token_entry = fungible_tokens.get(asset_identifier)
+    if not isinstance(token_entry, Mapping):
+        return None
+
+    def to_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "balance": to_int(token_entry.get("balance")),
+        "total_received": to_int(token_entry.get("total_received")),
+        "total_sent": to_int(token_entry.get("total_sent")),
+    }
+
+
 def _page_cursor(results: list[dict[str, Any]]) -> int | None:
     timestamps: list[int] = []
     for tx in results:
