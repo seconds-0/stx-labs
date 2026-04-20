@@ -390,7 +390,11 @@ def classify_wallets(
     activation = compute_activation(first_seen)
     addresses = activation["address"].astype(str).tolist()
 
-    # Determine funded via balances
+    # Determine funded via balances. DB-first, no serial live-fetch fallback —
+    # populate via refresh_dashboard_cache --ensure-wallet-balances instead.
+    # Any address without a recent snapshot is treated as unfunded so the
+    # classification stays deterministic and dashboard builds never stall on
+    # cold Hiro fetches.
     funded_map: dict[str, bool] = {}
     if balance_lookup is not None:
         for addr, bal in balance_lookup.items():
@@ -407,28 +411,15 @@ def classify_wallets(
             for row in stored_balances.itertuples():
                 balance_ustx = int(row.balance_ustx) if pd.notna(row.balance_ustx) else 0
                 funded_map[str(row.address)] = bool(balance_ustx >= threshold_ustx)
-        missing_addresses = [addr for addr in addresses if addr not in funded_map]
-        if missing_addresses:
-            wallet_metrics.ensure_wallet_balances(
-                missing_addresses,
-                as_of_date=snapshot_date,
-                funded_threshold_stx=thresholds.funded_stx_min,
-                db_path=wallet_db_path,
+        missing_count = sum(1 for addr in addresses if addr not in funded_map)
+        if missing_count:
+            LOGGER.warning(
+                "classify_wallets: %d/%d addresses have no recent balance "
+                "snapshot and will be treated as unfunded. Run "
+                "refresh_dashboard_cache --ensure-wallet-balances to close the gap.",
+                missing_count,
+                len(addresses),
             )
-            refreshed = wallet_metrics.load_wallet_balances(
-                missing_addresses,
-                as_of_date=snapshot_date,
-                max_age_days=None,
-                db_path=wallet_db_path,
-            )
-            if not refreshed.empty:
-                for row in refreshed.itertuples():
-                    balance_ustx = (
-                        int(row.balance_ustx) if pd.notna(row.balance_ustx) else 0
-                    )
-                    funded_map[str(row.address)] = bool(
-                        balance_ustx >= threshold_ustx
-                    )
 
     # Determine funded via sBTC cumulative receipts from the persisted
     # wallet_balances table. Population happens in ensure_wallet_balances on
