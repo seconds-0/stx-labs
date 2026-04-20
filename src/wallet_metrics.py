@@ -148,6 +148,13 @@ def _prepare_transactions(results: list[dict[str, Any]]) -> pd.DataFrame:
                 "burn_block_height": tx.get("burn_block_height"),
                 "microblock_sequence": tx.get("microblock_sequence"),
                 "ingested_at": pd.Timestamp(_utc_now()),
+                # Padding for columns the physical transactions table carries
+                # from the feat/stacks-wrapped branch. The active pipeline does
+                # not populate them, but the UPSERT still needs them in the
+                # source frame or DuckDB rejects excluded.contract_id.
+                "contract_id": None,
+                "contract_call_function": None,
+                "contract_call_args": None,
             }
         )
     if not records:
@@ -165,6 +172,9 @@ def _prepare_transactions(results: list[dict[str, Any]]) -> pd.DataFrame:
                 "burn_block_height",
                 "microblock_sequence",
                 "ingested_at",
+                "contract_id",
+                "contract_call_function",
+                "contract_call_args",
             ]
         )
     df = pd.DataFrame.from_records(records)
