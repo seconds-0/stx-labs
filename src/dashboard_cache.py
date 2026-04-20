@@ -16,7 +16,7 @@ from . import wallet_metrics
 from . import wallet_value
 from .cache_utils import read_parquet, write_parquet
 
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v2"
 CACHE_DIR = cfg.CACHE_DIR / "dashboard_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 META_PATH = CACHE_DIR / f"meta_{CACHE_VERSION}.json"
@@ -74,6 +74,9 @@ def refresh_dashboard_cache(
     force_refresh: bool = False,
     wallet_db_path: Path | None = None,
     ensure_wallet_balances: bool = False,
+    balance_batch_size: int | None = 100,
+    balance_max_workers: int = 20,
+    balance_delay_seconds: float = 0.5,
 ) -> DashboardCacheMeta:
     """Recompute wallet + ROI aggregates and persist them to parquet files."""
 
@@ -126,6 +129,9 @@ def refresh_dashboard_cache(
                 as_of_date=datetime.now(UTC).date(),
                 funded_threshold_stx=thresholds.funded_stx_min,
                 db_path=wallet_db_path,
+                batch_size=balance_batch_size,
+                max_workers=balance_max_workers,
+                delay_seconds=balance_delay_seconds,
             )
 
     price_panel = wallet_value.load_price_panel_for_activity(

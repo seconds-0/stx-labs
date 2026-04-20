@@ -3863,6 +3863,9 @@ def build_roi_dashboard(
     channel_map_file: Path | None = None,
     incentives_file: Path | None = None,
     ensure_wallet_balances: bool = False,
+    balance_batch_size: int | None = 100,
+    balance_max_workers: int = 20,
+    balance_delay_seconds: float = 0.5,
     spot_price: float | None = None,
     spot_price_ts: datetime | None = None,
     precomputed_inputs: roi.RoiInputs | None = None,
@@ -3882,6 +3885,9 @@ def build_roi_dashboard(
             wallet_db_path=wallet_db_path,
             skip_history_sync=skip_history_sync,
             ensure_balances=ensure_wallet_balances,
+            balance_batch_size=balance_batch_size,
+            balance_max_workers=balance_max_workers,
+            balance_delay_seconds=balance_delay_seconds,
         )
 
     retention = inputs.retention
@@ -4248,6 +4254,24 @@ def main() -> None:
         help="Refresh funded balances for recent activations before building ROI dashboards (defaults to off to avoid Hiro rate-limits).",
     )
     parser.add_argument(
+        "--balance-batch-size",
+        type=int,
+        default=100,
+        help="Addresses per concurrent balance-fetch batch when --ensure-wallet-balances is set. 0 or negative = sequential.",
+    )
+    parser.add_argument(
+        "--balance-max-workers",
+        type=int,
+        default=20,
+        help="Concurrent Hiro balance requests per batch (default: 20).",
+    )
+    parser.add_argument(
+        "--balance-delay-seconds",
+        type=float,
+        default=0.5,
+        help="Sleep between balance batches (default: 0.5s).",
+    )
+    parser.add_argument(
         "--retention-demo",
         action="store_true",
         help="Also build the retention visualization playground.",
@@ -4526,6 +4550,13 @@ def main() -> None:
                 channel_map_file=args.channel_map_file,
                 incentives_file=args.incentives_file,
                 ensure_wallet_balances=args.ensure_wallet_balances,
+                balance_batch_size=(
+                    args.balance_batch_size
+                    if args.balance_batch_size > 0
+                    else None
+                ),
+                balance_max_workers=args.balance_max_workers,
+                balance_delay_seconds=args.balance_delay_seconds,
                 spot_price=spot_price,
                 spot_price_ts=spot_price_ts,
                 precomputed_inputs=roi_inputs_arg,

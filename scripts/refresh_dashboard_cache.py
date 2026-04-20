@@ -52,11 +52,30 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Refresh funded balance snapshots while rebuilding the cache.",
     )
+    parser.add_argument(
+        "--balance-batch-size",
+        type=int,
+        default=100,
+        help="Addresses per concurrent balance-fetch batch (default: 100). Set 0/negative to fetch sequentially.",
+    )
+    parser.add_argument(
+        "--balance-max-workers",
+        type=int,
+        default=20,
+        help="Concurrent Hiro balance requests per batch (default: 20). Tune against your Hiro rate limit.",
+    )
+    parser.add_argument(
+        "--balance-delay-seconds",
+        type=float,
+        default=0.5,
+        help="Sleep between balance batches (default: 0.5s).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    batch_size = args.balance_batch_size if args.balance_batch_size > 0 else None
     meta = dashboard_cache.refresh_dashboard_cache(
         max_days=args.wallet_max_days,
         wallet_windows=args.wallet_windows,
@@ -64,6 +83,9 @@ def main() -> None:
         force_refresh=args.force_refresh,
         wallet_db_path=args.wallet_db_path,
         ensure_wallet_balances=args.ensure_wallet_balances,
+        balance_batch_size=batch_size,
+        balance_max_workers=args.balance_max_workers,
+        balance_delay_seconds=args.balance_delay_seconds,
     )
     print(
         f"[dashboard-cache] Generated at {meta.generated_at.strftime('%Y-%m-%d %H:%M UTC')} "

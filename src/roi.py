@@ -53,6 +53,9 @@ def build_inputs(
     skip_history_sync: bool = False,
     ensure_balances: bool = False,
     include_classification: bool = False,
+    balance_batch_size: int | None = 100,
+    balance_max_workers: int = 20,
+    balance_delay_seconds: float = 0.5,
 ) -> RoiInputs:
     """Load all data required for the ROI dashboard."""
     if not skip_history_sync:
@@ -83,6 +86,9 @@ def build_inputs(
                 as_of_date=datetime.now(UTC).date(),
                 funded_threshold_stx=thresholds.funded_stx_min,
                 db_path=wallet_db_path,
+                batch_size=balance_batch_size,
+                max_workers=balance_max_workers,
+                delay_seconds=balance_delay_seconds,
             )
 
     price_panel = wallet_value.load_price_panel_for_activity(

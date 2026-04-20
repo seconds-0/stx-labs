@@ -74,6 +74,16 @@ Build dashboards
   - Macro: `public/macro/index.html`
   - ROI One-Pager: `public/roi/index.html` (built automatically; run `--one-pager-only` for the ROI dash in isolation; provide CAC + channel CSVs per `docs/roi_one_pager_spec.md` to unlock the payback tile).
 
+Refresh balances for funded classification (STX + sBTC)
+- `python scripts/refresh_dashboard_cache.py --ensure-wallet-balances --force-refresh`
+- One Hiro request per recent activation pulls both STX and sBTC receipts into
+  `wallet_balances.sbtc_total_received_sats`. Tune throughput with
+  `--balance-batch-size 100 --balance-max-workers 20 --balance-delay-seconds 0.5`
+  against your Hiro tier. The classifier then reads sBTC funded status as a
+  plain DB lookup — no extra API calls at classification time.
+- Override the sBTC asset identifier(s) via `SBTC_ASSET_IDENTIFIERS=...,...` when
+  working against testnet or multiple tokens; mainnet default is baked in.
+
 Notebook validation (optional, per repo workflow)
 - Quick: `make smoke-notebook` (30-day window)
 - Full: `make notebook`
