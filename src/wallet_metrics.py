@@ -76,10 +76,19 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             burn_block_time TIMESTAMP,
             burn_block_height BIGINT,
             microblock_sequence BIGINT,
-            ingested_at TIMESTAMP
+            ingested_at TIMESTAMP,
+            contract_id VARCHAR,
+            contract_call_function VARCHAR,
+            contract_call_args VARCHAR
         );
         """
     )
+    # Backfill columns on DBs that predate the contract_* additions.
+    for column in ("contract_id", "contract_call_function", "contract_call_args"):
+        try:
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {column} VARCHAR")
+        except duckdb.CatalogException:
+            pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS wallet_balances (
@@ -92,6 +101,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
         );
         """
     )
+    try:
+        conn.execute(
+            "ALTER TABLE wallet_balances ADD COLUMN sbtc_total_received_sats BIGINT"
+        )
+    except duckdb.CatalogException:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS retention_segmented (
@@ -444,18 +459,30 @@ def ensure_wallet_balances(
     rows: list[dict[str, Any]] = []
     funded_threshold_ustx = int(funded_threshold_stx * MICROSTX_PER_STX)
     
+    sbtc_asset_ids = tuple(cfg.SBTC_ASSET_IDENTIFIERS)
+
     def fetch_single_balance(addr: str) -> dict[str, Any] | None:
-        """Fetch balance for a single address, return row dict or None if failed."""
+        """Fetch balance for a single address, return row dict or None if failed.
+
+        The Hiro balances payload already carries `fungible_tokens`, so sBTC
+        cumulative receipts come for free on the same request used for STX.
+        """
         try:
             payload = fetcher(addr)
             balance_ustx = _extract_stx_balance(payload)
             balance_stx = balance_ustx / MICROSTX_PER_STX
             funded = bool(balance_ustx >= funded_threshold_ustx)
+            sbtc_total_received_sats = 0
+            for asset_id in sbtc_asset_ids:
+                amounts = _extract_fungible_token_amounts(payload, asset_id)
+                if amounts:
+                    sbtc_total_received_sats += amounts.get("total_received", 0)
             LOGGER.info(
-                "✓ Fetched balance for %s: %.6f STX (funded: %s)",
+                "✓ Fetched balance for %s: %.6f STX (funded: %s, sBTC received: %d sats)",
                 addr,
                 balance_stx,
                 funded,
+                sbtc_total_received_sats,
             )
             return {
                 "address": addr,
@@ -463,6 +490,7 @@ def ensure_wallet_balances(
                 "balance_ustx": balance_ustx,
                 "funded": funded,
                 "ingested_at": pd.Timestamp(_utc_now()),
+                "sbtc_total_received_sats": sbtc_total_received_sats,
             }
         except Exception as exc:  # pragma: no cover - network failure path
             LOGGER.warning("✗ Failed to fetch balance for %s: %s", addr, exc)

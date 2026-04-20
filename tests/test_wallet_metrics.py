@@ -36,6 +36,69 @@ def test_extract_fungible_token_amounts_handles_strings():
     )
 
 
+def test_ensure_wallet_balances_captures_sbtc_in_same_pass(monkeypatch, tmp_path):
+    db_path = tmp_path / "wallets.duckdb"
+    asset_id = "TEST.sbtc-token::sbtc-token"
+    monkeypatch.setattr(cfg, "SBTC_ASSET_IDENTIFIERS", (asset_id,))
+
+    payloads = {
+        "A": {
+            "stx": {"balance": "0"},
+            "fungible_tokens": {
+                asset_id: {"balance": "150000", "total_received": "250000", "total_sent": "100000"}
+            },
+        },
+        "B": {
+            "stx": {"balance": str(50 * wallet_value.MICROSTX_PER_STX)},
+            "fungible_tokens": {},
+        },
+        "C": {
+            "stx": {"balance": "0"},
+            "fungible_tokens": {
+                "OTHER.token::other": {"balance": "999", "total_received": "999", "total_sent": "0"}
+            },
+        },
+    }
+
+    call_count = {"n": 0}
+
+    def fetcher(address: str) -> dict:
+        call_count["n"] += 1
+        return payloads[address]
+
+    wallet_metrics.ensure_wallet_balances(
+        ["A", "B", "C"],
+        as_of_date=date(2025, 4, 1),
+        funded_threshold_stx=10.0,
+        fetcher=fetcher,
+        db_path=db_path,
+    )
+
+    # Exactly one Hiro call per address — sBTC data came along with STX
+    assert call_count["n"] == 3
+
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        rows = conn.execute(
+            """
+            SELECT address, balance_ustx, funded, sbtc_total_received_sats
+            FROM wallet_balances
+            ORDER BY address
+            """
+        ).fetchall()
+
+    by_addr = {r[0]: r for r in rows}
+    # A: no STX, sBTC receipts captured in sats
+    assert by_addr["A"][1] == 0
+    assert by_addr["A"][2] is False
+    assert by_addr["A"][3] == 250000
+    # B: STX-funded, no sBTC
+    assert by_addr["B"][1] == 50 * wallet_value.MICROSTX_PER_STX
+    assert by_addr["B"][2] is True
+    assert by_addr["B"][3] == 0
+    # C: sBTC totals only sum configured asset ids, not other tokens
+    assert by_addr["C"][3] == 0
+
+
 def test_load_recent_wallet_activity_filters_transactions(monkeypatch, tmp_path):
     base_time = datetime(2025, 4, 1, 12, 0, tzinfo=UTC)
     cutoff_time = int((base_time - timedelta(days=8)).timestamp())

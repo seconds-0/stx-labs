@@ -28,11 +28,16 @@ HIRO_API_KEY_ENV = "HIRO_API_KEY"
 COINGECKO_API_KEY = os.getenv("COIN_GECKO_KEY")
 
 SBTC_ASSET_IDENTIFIERS_ENV = "SBTC_ASSET_IDENTIFIERS"
-SBTC_ASSET_IDENTIFIERS = tuple(
+# Canonical sBTC FT on Stacks mainnet (verified against Hiro balances endpoint).
+DEFAULT_SBTC_ASSET_IDENTIFIERS: tuple[str, ...] = (
+    "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+)
+_sbtc_env = tuple(
     s.strip()
     for s in os.getenv(SBTC_ASSET_IDENTIFIERS_ENV, "").split(",")
     if s.strip()
 )
+SBTC_ASSET_IDENTIFIERS: tuple[str, ...] = _sbtc_env or DEFAULT_SBTC_ASSET_IDENTIFIERS
 
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
