@@ -17,6 +17,7 @@ Design goals:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,8 @@ import pandas as pd
 from . import config as cfg
 from . import prices
 from . import wallet_metrics
+
+LOGGER = logging.getLogger(__name__)
 
 MICROSTX_PER_STX = 1_000_000
 SATOSHIS_PER_BTC = 100_000_000
@@ -370,10 +373,14 @@ def classify_wallets(
     fallback to live Hiro API fetches for any missing addresses.
 
     sbtc_total_received_lookup allows injecting cumulative sBTC received values
-    (in BTC units) for testing. When not provided and sBTC asset identifiers are
-    configured, we fetch balances from Hiro and treat wallets as funded when
-    total sBTC received >= funded_sbtc_min_btc. Asset identifiers can be passed
-    explicitly via sbtc_asset_identifiers or configured via SBTC_ASSET_IDENTIFIERS.
+    (in BTC units) for testing. When not provided, cumulative receipts are read
+    from wallet_balances.sbtc_total_received_sats — which is populated for free
+    by ensure_wallet_balances on its next pass. Callers should have run that
+    ahead of classification (refresh_dashboard_cache --ensure-wallet-balances);
+    if the column is missing or empty, sBTC-only wallets are silently skipped.
+    The sbtc_asset_identifiers parameter is retained for backward compatibility
+    but is no longer used by classify_wallets — asset IDs live on the fetcher
+    side via cfg.SBTC_ASSET_IDENTIFIERS.
     """
     if first_seen.empty:
         return pd.DataFrame(
@@ -423,51 +430,37 @@ def classify_wallets(
                         balance_ustx >= threshold_ustx
                     )
 
-    # Determine funded via sBTC cumulative receipts for wallets not already funded by STX.
+    # Determine funded via sBTC cumulative receipts from the persisted
+    # wallet_balances table. Population happens in ensure_wallet_balances on
+    # the same Hiro request that fetched STX balance, so no extra network
+    # calls happen here — classify_wallets is a pure DB read.
     sbtc_funded_map: dict[str, bool] = {}
     if thresholds.funded_sbtc_min_btc > 0:
         sbtc_threshold_sats = int(
             thresholds.funded_sbtc_min_btc * SATOSHIS_PER_BTC
         )
-        if sbtc_total_received_lookup is not None:
-            for addr, total_received_btc in sbtc_total_received_lookup.items():
-                try:
-                    total_received_sats = int(
-                        float(total_received_btc) * SATOSHIS_PER_BTC
-                    )
-                except (TypeError, ValueError):
-                    total_received_sats = 0
-                sbtc_funded_map[str(addr)] = bool(
-                    total_received_sats >= sbtc_threshold_sats
+        lookup = sbtc_total_received_lookup
+        if lookup is None:
+            try:
+                lookup = wallet_metrics.load_sbtc_total_received(
+                    addresses, db_path=wallet_db_path
                 )
-        else:
-            asset_ids = (
-                list(sbtc_asset_identifiers)
-                if sbtc_asset_identifiers is not None
-                else list(cfg.SBTC_ASSET_IDENTIFIERS)
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.warning(
+                    "sBTC lookup failed, classification will miss sBTC-funded wallets: %s",
+                    exc,
+                )
+                lookup = {}
+        for addr, total_received_btc in lookup.items():
+            try:
+                total_received_sats = int(
+                    float(total_received_btc) * SATOSHIS_PER_BTC
+                )
+            except (TypeError, ValueError):
+                total_received_sats = 0
+            sbtc_funded_map[str(addr)] = bool(
+                total_received_sats >= sbtc_threshold_sats
             )
-            if asset_ids:
-                candidates = [
-                    addr for addr in addresses if not funded_map.get(addr, False)
-                ]
-                for addr in candidates:
-                    try:
-                        payload = wallet_metrics.fetch_address_balances(addr)
-                    except Exception:
-                        payload = None
-                    total_received_sats = 0
-                    if payload:
-                        for asset_id in asset_ids:
-                            amounts = wallet_metrics._extract_fungible_token_amounts(
-                                payload, asset_id
-                            )
-                            if amounts:
-                                total_received_sats += amounts.get(
-                                    "total_received", 0
-                                )
-                    sbtc_funded_map[addr] = bool(
-                        total_received_sats >= sbtc_threshold_sats
-                    )
 
     # Active in 30d: tx_count >= threshold in window 30
     w30 = (

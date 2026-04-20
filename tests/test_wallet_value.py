@@ -161,6 +161,73 @@ def test_classification_funded_by_sbtc_total_received_lookup():
     assert bool(b.funded) is False
 
 
+def test_classification_loads_sbtc_from_db(monkeypatch, tmp_path):
+    """With no injected lookup, classify_wallets reads sBTC from wallet_balances."""
+    from datetime import UTC, date, datetime
+    from src import wallet_metrics
+
+    db_path = tmp_path / "wallets.duckdb"
+    asset_id = "TEST.sbtc-token::sbtc-token"
+    monkeypatch.setattr(wallet_value.cfg, "SBTC_ASSET_IDENTIFIERS", (asset_id,))
+    # Pin "now" so the DB snapshot date falls inside load_sbtc_total_received's
+    # max_age_days window.
+    fixed_now = datetime(2025, 4, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(wallet_metrics, "_utc_now", lambda: fixed_now)
+
+    # Seed wallet_balances via the same pipeline production uses, so the DB row
+    # shape (column names, types, naming of sbtc_total_received_sats) matches.
+    payloads = {
+        "A": {
+            "stx": {"balance": "0"},
+            "fungible_tokens": {
+                asset_id: {"balance": "0", "total_received": "250000", "total_sent": "0"}
+            },
+        },
+        "B": {
+            "stx": {"balance": "0"},
+            "fungible_tokens": {
+                asset_id: {"balance": "0", "total_received": "50000", "total_sent": "0"}
+            },
+        },
+    }
+    wallet_metrics.ensure_wallet_balances(
+        ["A", "B"],
+        as_of_date=date(2025, 4, 1),
+        funded_threshold_stx=10.0,
+        fetcher=lambda addr: payloads[addr],
+        db_path=db_path,
+    )
+
+    activity = _activity_fixture()
+    first_seen = _first_seen_fixture()
+    prices = _price_panel_fixture()
+    windows = wallet_value.compute_wallet_windows(
+        activity, first_seen, prices, windows=(30,)
+    )
+    thresholds = wallet_value.ClassificationThresholds(
+        funded_stx_min=10.0,
+        funded_sbtc_min_btc=0.001,
+        active_min_tx_30d=3,
+        value_min_fee_stx_30d=1.0,
+    )
+
+    classified = wallet_value.classify_wallets(
+        first_seen=first_seen,
+        activity=activity,
+        windows_agg=windows,
+        thresholds=thresholds,
+        balance_lookup={"A": 0.0, "B": 0.0},
+        wallet_db_path=db_path,
+    )
+
+    a = classified[classified["address"] == "A"].iloc[0]
+    b = classified[classified["address"] == "B"].iloc[0]
+    # A received 0.0025 BTC in sBTC (>= 0.001 threshold) → funded via sBTC
+    assert bool(a.funded) is True
+    # B received 0.0005 BTC (< threshold) → not funded
+    assert bool(b.funded) is False
+
+
 def test_compute_network_daily_and_kpis():
     activity = _activity_fixture()
     activity["fee_stx"] = activity["fee_ustx"] / wallet_value.MICROSTX_PER_STX

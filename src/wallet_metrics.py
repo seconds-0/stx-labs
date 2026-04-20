@@ -587,6 +587,55 @@ def load_wallet_balances(
     return df.reset_index(drop=True)
 
 
+SATOSHIS_PER_BTC = 100_000_000
+
+
+def load_sbtc_total_received(
+    addresses: Sequence[str],
+    *,
+    as_of_date: date | None = None,
+    max_age_days: int | None = 30,
+    db_path: Path | None = None,
+) -> dict[str, float]:
+    """Return {address: cumulative_sbtc_received_in_btc} from wallet_balances.
+
+    Reads the most recent sbtc_total_received_sats per address (within
+    max_age_days of target) and converts to BTC units for threshold compare.
+    Addresses with no snapshot or NULL sBTC totals are absent from the result.
+    """
+    deduped = sorted({str(addr) for addr in addresses if addr})
+    if not deduped:
+        return {}
+    with _connect(read_only=True, db_path=db_path) as conn:
+        try:
+            df = conn.execute(
+                """
+                SELECT address, as_of_date, sbtc_total_received_sats
+                FROM wallet_balances
+                WHERE address IN (SELECT * FROM UNNEST(?))
+                  AND sbtc_total_received_sats IS NOT NULL
+                """,
+                [deduped],
+            ).fetchdf()
+        except duckdb.CatalogException:
+            return {}
+    if df.empty:
+        return {}
+    df["as_of_date"] = pd.to_datetime(df["as_of_date"])
+    target_date = pd.to_datetime(as_of_date or _utc_now().date())
+    df = df[df["as_of_date"] <= target_date]
+    if max_age_days is not None:
+        min_date = target_date - pd.Timedelta(days=max_age_days)
+        df = df[df["as_of_date"] >= min_date]
+    if df.empty:
+        return {}
+    df = df.sort_values("as_of_date").drop_duplicates("address", keep="last")
+    return {
+        str(row.address): float(row.sbtc_total_received_sats) / SATOSHIS_PER_BTC
+        for row in df.itertuples(index=False)
+    }
+
+
 def ensure_transaction_history(
     *,
     max_days: int,
